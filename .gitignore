@@ -1,0 +1,9 @@
+.env
+dist/
+web/node_modules/
+web/.next/
+web/out/
+*.exe
+*.log
+api/tmp/
+agent/tmp/

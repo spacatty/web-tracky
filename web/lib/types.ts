@@ -1,0 +1,175 @@
+export type Role = "admin" | "user";
+
+export type GroupRef = {
+  id: string;
+  name: string;
+  visibility: "public" | "private";
+};
+
+export type Me = {
+  id: string;
+  email: string;
+  role: Role;
+  groups: GroupRef[];
+};
+
+export type PublicConfig = {
+  registration: "open" | "closed";
+  app_url: string;
+  agent_url: string;
+  min_interval_sec: number;
+};
+
+export type Group = {
+  id: string;
+  name: string;
+  slug: string;
+  visibility: "public" | "private";
+  description: string;
+  user_count: number;
+  node_count: number;
+  created_at: string;
+  users?: { id: string; name: string }[];
+  nodes?: { id: string; name: string; online?: boolean }[];
+};
+
+export type FleetNode = {
+  id: string;
+  name: string;
+  online: boolean;
+  last_seen_at: string | null;
+  core_version: string;
+  pack_version: number;
+  ip?: string;
+  country: string;
+  country_code: string;
+  city: string;
+  latitude: number | null;
+  longitude: number | null;
+  adapter: string;
+  link_speed_bps: number;
+  rx_bps: number;
+  tx_bps: number;
+  api_rtt_ms: number | null;
+  hostname: string;
+  os: string;
+  arch: string;
+  kernel: string;
+  groups: GroupRef[];
+  created_at: string;
+};
+
+export type MetricPoint = {
+  t: string;
+  rx_bps: number;
+  tx_bps: number;
+  api_rtt_ms: number | null;
+};
+
+export type UserRow = {
+  id: string;
+  email: string;
+  role: Role;
+  groups: GroupRef[];
+  created_at: string;
+};
+
+export type EnrollToken = {
+  id: string;
+  name: string;
+  token?: string;
+  expires_at: string | null;
+  max_uses: number;
+  uses: number;
+  revoked: boolean;
+  groups: GroupRef[];
+  created_at: string;
+};
+
+export type Monitor = {
+  id: string;
+  name: string;
+  target_url: string;
+  interval_sec: number;
+  enabled: boolean;
+  public_enabled: boolean;
+  public_slug: string | null;
+  country_codes: string[];
+  max_nodes: number;
+  groups: GroupRef[];
+  last_status: string;
+  last_checked_at: string | null;
+  uptime_24h: number | null;
+  owner_email?: string;
+  created_at: string;
+};
+
+export type CheckResult = {
+  id: string;
+  node_id: string | null;
+  node_name: string;
+  city: string;
+  country: string;
+  country_code: string;
+  status: "pending" | "ok" | "fail";
+  http_status: number | null;
+  ttfb_ms: number | null;
+  total_ms: number | null;
+  ping_ms: number | null;
+  error: string;
+  finished_at: string | null;
+};
+
+export type CheckRun = {
+  id: string;
+  monitor_id: string;
+  trigger: "schedule" | "manual";
+  started_at: string;
+  finished_at: string | null;
+  results: CheckResult[];
+};
+
+export type LatencyPoint = {
+  t: string;
+  node_id: string;
+  label: string;
+  total_ms: number;
+  ok: boolean;
+};
+
+export type UptimeBucket = {
+  t: string;
+  ok_ratio: number;
+};
+
+export type MonitorDetail = Monitor & {
+  latest_run: CheckRun | null;
+  uptime_7d: number | null;
+  points: LatencyPoint[];
+  buckets: UptimeBucket[];
+};
+
+export type Overview = {
+  nodes_online: number;
+  nodes_total: number;
+  monitors_total: number;
+  monitors_failing: number;
+  monitors_ok: number;
+  recent_failures: {
+    finished_at: string | null;
+    monitor_id: string;
+    monitor_name: string;
+    node_name: string;
+    city: string;
+    country_code: string;
+    http_status: number | null;
+    error: string;
+  }[];
+};
+
+export type ResultEvent = {
+  run_id: string;
+  monitor_id: string;
+  result: CheckResult;
+  run_finished: boolean;
+};

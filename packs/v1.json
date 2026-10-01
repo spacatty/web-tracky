@@ -1,0 +1,27 @@
+{
+  "version": 1,
+  "core_min": "0.1.0",
+  "heartbeat_sec": 15,
+  "job_timeout_sec": 60,
+  "heartbeat": [
+    {"op": "net.sample", "save": "net"},
+    {"op": "host.info", "save": "host"}
+  ],
+  "check": [
+    {
+      "op": "http.request",
+      "method": "GET",
+      "url": "{{url}}",
+      "timeout_ms": 10000,
+      "follow_redirects": true,
+      "save": "http"
+    },
+    {
+      "op": "icmp.ping",
+      "host": "{{host}}",
+      "count": 3,
+      "timeout_ms": 5000,
+      "save": "ping"
+    }
+  ]
+}

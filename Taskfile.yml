@@ -1,0 +1,52 @@
+version: "3"
+
+dotenv: [".env"]
+
+tasks:
+  default:
+    cmds:
+      - task: dev
+
+  env:
+    cmds:
+      - cmd: powershell -NoProfile -Command "if (-not (Test-Path .env)) { Copy-Item .env.example .env }"
+        platforms: [windows]
+      - cmd: sh -c 'test -f .env || cp .env.example .env'
+        platforms: [linux, darwin]
+
+  dev:
+    cmds:
+      - task: env
+      - task: dev:db
+      - task: dev:run
+
+  dev:db:
+    cmds:
+      - docker compose up -d --wait postgres
+
+  dev:run:
+    deps: [dev:api, dev:web]
+
+  dev:api:
+    dir: api
+    env:
+      HTTP_ADDR: ":{{.API_PORT}}"
+    cmds:
+      - go run ./cmd/api
+
+  dev:web:
+    dir: web
+    env:
+      API_INTERNAL_URL: "http://127.0.0.1:{{.API_PORT}}"
+    cmds:
+      - npm run dev -- -p {{.WEB_PORT}}
+
+  prod:
+    cmds:
+      - task: env
+      - docker compose up --build --remove-orphans
+
+  publish-agent:
+    dir: api
+    cmds:
+      - go run ./cmd/publish -version {{.AGENT_VERSION}} -out {{.TASKFILE_DIR}}/dist/agent -agent {{.TASKFILE_DIR}}/agent
