@@ -19,7 +19,7 @@ import (
 	"tracky/agent/internal/update"
 )
 
-var version = "0.1.0"
+var version = "0.2.0"
 
 func main() {
 	log.SetFlags(log.LstdFlags | log.Lmsgprefix)
@@ -55,20 +55,22 @@ func main() {
 }
 
 type app struct {
-	cfg     config.File
-	cfgPath string
-	engine  *interp.Engine
-	client  *http.Client
-	pack    config.Pack
-	rtt     time.Duration
+	cfg        config.File
+	cfgPath    string
+	engine     *interp.Engine
+	client     *http.Client
+	pack       config.Pack
+	rtt        time.Duration
+	forceSpeed bool
 }
 
 type heartbeatResponse struct {
-	HeldMS       int64           `json:"held_ms"`
-	HeartbeatSec int             `json:"heartbeat_sec"`
-	Core         update.Core     `json:"core"`
-	Pack         json.RawMessage `json:"pack"`
-	Jobs         []interp.Job    `json:"jobs"`
+	HeldMS         int64           `json:"held_ms"`
+	HeartbeatSec   int             `json:"heartbeat_sec"`
+	Core           update.Core     `json:"core"`
+	Pack           json.RawMessage `json:"pack"`
+	Jobs           []interp.Job    `json:"jobs"`
+	RefreshMetrics bool            `json:"refresh_metrics"`
 }
 
 func (a *app) loop() {
@@ -80,6 +82,9 @@ func (a *app) loop() {
 			continue
 		}
 		a.rtt = rtt
+		if resp.RefreshMetrics {
+			a.forceSpeed = true
+		}
 		a.applyPack(resp.Pack)
 		for _, job := range resp.Jobs {
 			go a.runJob(job)
@@ -137,10 +142,21 @@ func (a *app) enroll(ctx context.Context) error {
 
 func (a *app) heartbeat(ctx context.Context) (heartbeatResponse, time.Duration, error) {
 	var resp heartbeatResponse
-	saves, err := a.engine.Run(a.pack.Heartbeat)
+	steps := a.pack.Heartbeat
+	forcing := a.forceSpeed
+	if forcing {
+		a.forceSpeed = false
+		steps = withForcedSpeed(steps)
+	}
+	saves, err := a.engine.Run(steps)
 	if err != nil {
 		log.Printf("heartbeat steps: %v", err)
 		saves = map[string]any{}
+	}
+	if speed, ok := saves["speed"].(map[string]any); ok {
+		if text, _ := speed["error"].(string); text != "" {
+			log.Printf("speed: %s", text)
+		}
 	}
 	payload := map[string]any{
 		"core_version": version,
@@ -148,6 +164,9 @@ func (a *app) heartbeat(ctx context.Context) (heartbeatResponse, time.Duration, 
 		"goos":         runtime.GOOS,
 		"goarch":       runtime.GOARCH,
 		"metrics":      saves,
+	}
+	if forcing {
+		payload["metrics_refresh"] = true
 	}
 	if a.rtt > 0 {
 		payload["api_rtt_ms"] = float64(a.rtt.Microseconds()) / 1000
@@ -178,6 +197,21 @@ func (a *app) heartbeat(ctx context.Context) (heartbeatResponse, time.Duration, 
 		net = 0
 	}
 	return resp, net, nil
+}
+
+func withForcedSpeed(steps []map[string]any) []map[string]any {
+	out := make([]map[string]any, len(steps))
+	for i, step := range steps {
+		next := make(map[string]any, len(step)+1)
+		for key, value := range step {
+			next[key] = value
+		}
+		if op, _ := next["op"].(string); op == "net.speed" {
+			next["force"] = true
+		}
+		out[i] = next
+	}
+	return out
 }
 
 func (a *app) applyPack(raw json.RawMessage) {

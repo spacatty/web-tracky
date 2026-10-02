@@ -11,6 +11,15 @@ import (
 //go:embed schema.sql
 var schemaSQL string
 
+//go:embed migrate2.sql
+var migrate2SQL string
+
+//go:embed migrate3.sql
+var migrate3SQL string
+
+//go:embed migrate4.sql
+var migrate4SQL string
+
 func Connect(ctx context.Context, url string) (*pgxpool.Pool, error) {
 	pool, err := pgxpool.New(ctx, url)
 	if err != nil {
@@ -45,6 +54,33 @@ func Migrate(ctx context.Context, pool *pgxpool.Pool) error {
 	if !applied {
 		if _, err := tx.Exec(ctx, schemaSQL); err != nil {
 			return fmt.Errorf("migrate: %w", err)
+		}
+	}
+	var speedCols int
+	if err := tx.QueryRow(ctx, `SELECT count(*) FROM schema_migrations WHERE version = 2`).Scan(&speedCols); err != nil {
+		return err
+	}
+	if speedCols == 0 {
+		if _, err := tx.Exec(ctx, migrate2SQL); err != nil {
+			return fmt.Errorf("migrate v2: %w", err)
+		}
+	}
+	var ruleCols int
+	if err := tx.QueryRow(ctx, `SELECT count(*) FROM schema_migrations WHERE version = 3`).Scan(&ruleCols); err != nil {
+		return err
+	}
+	if ruleCols == 0 {
+		if _, err := tx.Exec(ctx, migrate3SQL); err != nil {
+			return fmt.Errorf("migrate v3: %w", err)
+		}
+	}
+	var refreshCols int
+	if err := tx.QueryRow(ctx, `SELECT count(*) FROM schema_migrations WHERE version = 4`).Scan(&refreshCols); err != nil {
+		return err
+	}
+	if refreshCols == 0 {
+		if _, err := tx.Exec(ctx, migrate4SQL); err != nil {
+			return fmt.Errorf("migrate v4: %w", err)
 		}
 	}
 	return tx.Commit(ctx)

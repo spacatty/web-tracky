@@ -1,19 +1,19 @@
 "use client";
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
 
-import { LatencyChart, UptimeChart } from "@/components/latency-chart";
-import { LoadBar } from "@/components/load-bar";
+import { MonitorPanel } from "@/components/monitor-panel";
+import { SuccessRulesField } from "@/components/success-rules";
 import { StatusPill } from "@/components/status-pill";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ApiError, api } from "@/lib/api";
-import { formatInterval, formatMs, formatUptime, locationLabel } from "@/lib/format";
+import { formatInterval } from "@/lib/format";
+import { blankRule, compileRules, describeSuccess, toDraft, type DraftRule } from "@/lib/success";
 import type { CheckRun, MonitorDetail, ResultEvent } from "@/lib/types";
 
 export default function MonitorDetailPage() {
@@ -60,6 +60,22 @@ export default function MonitorDetailPage() {
     },
     onError: (error) => toast.error(error instanceof ApiError ? error.message : "Could not delete"),
   });
+  const [rulesOpen, setRulesOpen] = useState(false);
+  const [customSuccess, setCustomSuccess] = useState(false);
+  const [successRules, setSuccessRules] = useState<DraftRule[]>([blankRule()]);
+  const saveRules = useMutation({
+    mutationFn: () => {
+      const compiled = compileRules(customSuccess, successRules);
+      if (!compiled.ok) return Promise.reject(new Error(compiled.error));
+      return api(`/api/monitors/${id}`, { method: "PATCH", body: JSON.stringify({ success_rules: compiled.rules }) });
+    },
+    onSuccess: () => {
+      toast.success("Success rules updated");
+      setRulesOpen(false);
+      client.invalidateQueries({ queryKey: ["monitor", id] });
+    },
+    onError: (error) => toast.error(error instanceof ApiError ? error.message : error instanceof Error ? error.message : "Could not update rules"),
+  });
 
   if (!query.data) {
     return (
@@ -72,16 +88,33 @@ export default function MonitorDetailPage() {
   const monitor = query.data;
   const appUrl = typeof window === "undefined" ? "" : window.location.origin;
 
+  const shareHref = monitor.public_enabled && monitor.public_slug ? `${appUrl}/status/${monitor.public_slug}` : null;
+
   return (
-    <div className="space-y-6">
+    <div className="space-y-4">
       <div className="flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <p className="font-mono text-[11px] tracking-[0.16em] text-muted-foreground uppercase">Monitor</p>
-          <h1 className="mt-1 text-2xl font-semibold tracking-tight">{monitor.name}</h1>
-          <a href={monitor.target_url} className="font-mono text-sm text-muted-foreground hover:text-foreground">{monitor.target_url}</a>
-          <p className="mt-2 text-xs text-muted-foreground">
+        <div className="min-w-0">
+          <div className="flex items-center gap-2">
+            <h1 className="text-xl font-semibold tracking-tight">{monitor.name}</h1>
+            <StatusPill status={monitor.last_status} />
+          </div>
+          <a href={monitor.target_url} className="font-mono text-xs text-muted-foreground hover:text-foreground">{monitor.target_url}</a>
+          <p className="mt-1 text-[11px] text-muted-foreground">
             Every {formatInterval(monitor.interval_sec)} · up to {monitor.max_nodes} nodes
             {monitor.country_codes.length ? ` · ${monitor.country_codes.join(", ")}` : ""}
+            {" · "}
+            <button
+              type="button"
+              className="hover:text-foreground"
+              onClick={() => {
+                const next = toDraft(monitor.success_rules);
+                setCustomSuccess(next.enabled);
+                setSuccessRules(next.rules);
+                setRulesOpen(true);
+              }}
+            >
+              Success {describeSuccess(monitor.success_rules)}
+            </button>
           </p>
         </div>
         <div className="flex gap-2">
@@ -89,46 +122,26 @@ export default function MonitorDetailPage() {
           <Button variant="outline" onClick={() => remove.mutate()}>Delete</Button>
         </div>
       </div>
-      <div className="grid gap-3 sm:grid-cols-3">
-        <Card><CardHeader><CardTitle className="text-xs text-muted-foreground uppercase">24h uptime</CardTitle></CardHeader><CardContent className="font-mono text-2xl">{formatUptime(monitor.uptime_24h)}</CardContent></Card>
-        <Card><CardHeader><CardTitle className="text-xs text-muted-foreground uppercase">7d uptime</CardTitle></CardHeader><CardContent className="font-mono text-2xl">{formatUptime(monitor.uptime_7d)}</CardContent></Card>
-        <Card>
-          <CardHeader><CardTitle className="text-xs text-muted-foreground uppercase">Share</CardTitle></CardHeader>
-          <CardContent className="text-sm">
-            {monitor.public_enabled && monitor.public_slug ? (
-              <Link className="underline-offset-4 hover:underline" href={`/status/${monitor.public_slug}`}>{appUrl}/status/{monitor.public_slug}</Link>
-            ) : (
-              <span className="text-muted-foreground">Private</span>
-            )}
-          </CardContent>
-        </Card>
-      </div>
-      <Card>
-        <CardHeader><CardTitle>Locations</CardTitle></CardHeader>
-        <CardContent className="space-y-3">
-          {!run || run.results.length === 0 ? <p className="text-sm text-muted-foreground">No online agents in this pool yet. Enroll a machine or widen the group filter.</p> : null}
-          {run?.results.map((result) => (
-            <div key={result.id} className="grid items-center gap-2 border-b pb-3 last:border-0 sm:grid-cols-[180px_1fr_auto]">
-              <div>
-                <div className="text-sm font-medium">{locationLabel(result.city, result.country_code, result.node_name)}</div>
-                <div className="text-xs text-muted-foreground">{result.node_name}</div>
-              </div>
-              {result.status === "pending" ? <LoadBar /> : <StatusPill status={result.status} label={result.error || result.status} />}
-              <div className="font-mono text-xs text-muted-foreground">
-                {result.status === "pending" ? "checking" : `${formatMs(result.total_ms)} · HTTP ${result.http_status ?? "—"} · ping ${formatMs(result.ping_ms)}`}
-              </div>
-            </div>
-          ))}
-        </CardContent>
-      </Card>
-      <Card>
-        <CardHeader><CardTitle>Latency</CardTitle></CardHeader>
-        <CardContent><LatencyChart points={monitor.points} /></CardContent>
-      </Card>
-      <Card>
-        <CardHeader><CardTitle>Uptime, last 24 hours</CardTitle></CardHeader>
-        <CardContent><UptimeChart buckets={monitor.buckets} /></CardContent>
-      </Card>
+      <MonitorPanel monitor={monitor} run={run} shareHref={shareHref} />
+      <Dialog open={rulesOpen} onOpenChange={setRulesOpen}>
+        <DialogContent className="max-h-[calc(100vh-2rem)] overflow-y-auto sm:max-w-xl">
+          <DialogHeader>
+            <DialogTitle>Success rules</DialogTitle>
+          </DialogHeader>
+          <form
+            className="space-y-3"
+            onSubmit={(event) => {
+              event.preventDefault();
+              saveRules.mutate();
+            }}
+          >
+            <SuccessRulesField enabled={customSuccess} rules={successRules} onEnabledChange={setCustomSuccess} onChange={setSuccessRules} />
+            <DialogFooter>
+              <Button type="submit" disabled={saveRules.isPending}>Save</Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

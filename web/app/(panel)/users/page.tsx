@@ -20,6 +20,7 @@ export default function UsersPage() {
   const client = useQueryClient();
   const users = useQuery({ queryKey: ["users"], queryFn: () => api<UserRow[]>("/api/users") });
   const [open, setOpen] = useState(false);
+  const [selected, setSelected] = useState<UserRow | null>(null);
   const columns = useMemo<ColumnDef<UserRow>[]>(
     () => [
       { accessorKey: "email", header: "Email" },
@@ -45,8 +46,16 @@ export default function UsersPage() {
         </div>
         <Button onClick={() => setOpen(true)}>Add user</Button>
       </div>
-      <DataTable columns={columns} data={users.data ?? []} searchPlaceholder="Search users" empty="No users yet." />
+      <DataTable columns={columns} data={users.data ?? []} searchPlaceholder="Search users" onRowClick={setSelected} empty="No users yet." />
       <CreateUser open={open} onOpenChange={setOpen} onCreated={() => client.invalidateQueries({ queryKey: ["users"] })} />
+      <EditUser
+        user={selected}
+        onClose={() => setSelected(null)}
+        onSaved={() => {
+          client.invalidateQueries({ queryKey: ["users"] });
+          setSelected(null);
+        }}
+      />
     </div>
   );
 }
@@ -108,6 +117,89 @@ function CreateUser({ open, onOpenChange, onCreated }: { open: boolean; onOpenCh
           </div>
           <DialogFooter><Button type="submit" disabled={save.isPending}>Create</Button></DialogFooter>
         </form>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function EditUser({ user, onClose, onSaved }: { user: UserRow | null; onClose: () => void; onSaved: () => void }) {
+  const groups = useQuery({ queryKey: ["groups"], queryFn: () => api<Group[]>("/api/groups"), enabled: Boolean(user) });
+  const [password, setPassword] = useState("");
+  const [role, setRole] = useState("user");
+  const [groupIDs, setGroupIDs] = useState<string[]>([]);
+  const [seen, setSeen] = useState<string | null>(null);
+  if (user && seen !== user.id) {
+    setSeen(user.id);
+    setPassword("");
+    setRole(user.role);
+    setGroupIDs(user.groups.map((group) => group.id));
+  }
+  const save = useMutation({
+    mutationFn: () => {
+      const body: { password?: string; role: string; group_ids: string[] } = { role, group_ids: groupIDs };
+      if (password) body.password = password;
+      return api(`/api/users/${user?.id}`, { method: "PATCH", body: JSON.stringify(body) });
+    },
+    onSuccess: () => {
+      toast.success("User updated");
+      onSaved();
+    },
+    onError: (error) => toast.error(error instanceof ApiError ? error.message : "Could not update user"),
+  });
+  return (
+    <Dialog open={Boolean(user)} onOpenChange={(open) => !open && onClose()}>
+      <DialogContent className="sm:max-w-md">
+        <DialogHeader><DialogTitle>Edit user</DialogTitle></DialogHeader>
+        {user ? (
+          <form
+            className="space-y-3"
+            onSubmit={(event) => {
+              event.preventDefault();
+              save.mutate();
+            }}
+          >
+            <div className="space-y-1.5">
+              <Label>Email</Label>
+              <Input value={user.email} disabled />
+            </div>
+            <div className="space-y-1.5">
+              <Label>New password</Label>
+              <Input
+                type="password"
+                minLength={8}
+                value={password}
+                placeholder="Leave blank to keep the current password"
+                onChange={(event) => setPassword(event.target.value)}
+              />
+            </div>
+            <div className="space-y-1.5">
+              <Label>Role</Label>
+              <Select value={role} onValueChange={(value) => value && setRole(value)}>
+                <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="user">User</SelectItem>
+                  <SelectItem value="admin">Admin</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-2">
+              <Label>Groups</Label>
+              {(groups.data ?? []).map((group) => (
+                <label key={group.id} className="flex items-center gap-2 text-sm">
+                  <Checkbox
+                    checked={groupIDs.includes(group.id)}
+                    onCheckedChange={(checked) =>
+                      setGroupIDs((current) => (checked ? [...current, group.id] : current.filter((id) => id !== group.id)))
+                    }
+                  />
+                  {group.name}
+                  <span className="text-xs text-muted-foreground">{group.visibility}</span>
+                </label>
+              ))}
+            </div>
+            <DialogFooter><Button type="submit" disabled={save.isPending}>Save</Button></DialogFooter>
+          </form>
+        ) : null}
       </DialogContent>
     </Dialog>
   );

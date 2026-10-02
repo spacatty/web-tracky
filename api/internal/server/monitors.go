@@ -2,29 +2,33 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"time"
 
 	"github.com/jackc/pgx/v5"
+
+	"tracky/api/internal/pack"
 )
 
 type monitorRow struct {
-	ID            string     `json:"id"`
-	Name          string     `json:"name"`
-	TargetURL     string     `json:"target_url"`
-	IntervalSec   int        `json:"interval_sec"`
-	Enabled       bool       `json:"enabled"`
-	PublicEnabled bool       `json:"public_enabled"`
-	PublicSlug    *string    `json:"public_slug"`
-	CountryCodes  []string   `json:"country_codes"`
-	MaxNodes      int        `json:"max_nodes"`
-	Groups        []groupRef `json:"groups"`
-	LastStatus    string     `json:"last_status"`
-	LastCheckedAt *time.Time `json:"last_checked_at"`
-	Uptime24h     *float64   `json:"uptime_24h"`
-	OwnerEmail    string     `json:"owner_email,omitempty"`
-	CreatedAt     time.Time  `json:"created_at"`
+	ID            string             `json:"id"`
+	Name          string             `json:"name"`
+	TargetURL     string             `json:"target_url"`
+	IntervalSec   int                `json:"interval_sec"`
+	Enabled       bool               `json:"enabled"`
+	PublicEnabled bool               `json:"public_enabled"`
+	PublicSlug    *string            `json:"public_slug"`
+	CountryCodes  []string           `json:"country_codes"`
+	MaxNodes      int                `json:"max_nodes"`
+	SuccessRules  []pack.SuccessRule `json:"success_rules"`
+	Groups        []groupRef         `json:"groups"`
+	LastStatus    string             `json:"last_status"`
+	LastCheckedAt *time.Time         `json:"last_checked_at"`
+	Uptime24h     *float64           `json:"uptime_24h"`
+	OwnerEmail    string             `json:"owner_email,omitempty"`
+	CreatedAt     time.Time          `json:"created_at"`
 }
 
 type runResult struct {
@@ -102,20 +106,31 @@ func (s *Server) listMonitors(w http.ResponseWriter, r *http.Request) {
 func (s *Server) createMonitor(w http.ResponseWriter, r *http.Request) {
 	u := currentUser(r.Context())
 	var body struct {
-		Name          string   `json:"name"`
-		TargetURL     string   `json:"target_url"`
-		IntervalSec   int      `json:"interval_sec"`
-		Enabled       *bool    `json:"enabled"`
-		PublicEnabled bool     `json:"public_enabled"`
-		CountryCodes  []string `json:"country_codes"`
-		MaxNodes      int      `json:"max_nodes"`
-		GroupIDs      []string `json:"group_ids"`
+		Name          string             `json:"name"`
+		TargetURL     string             `json:"target_url"`
+		IntervalSec   int                `json:"interval_sec"`
+		Enabled       *bool              `json:"enabled"`
+		PublicEnabled bool               `json:"public_enabled"`
+		CountryCodes  []string           `json:"country_codes"`
+		MaxNodes      int                `json:"max_nodes"`
+		GroupIDs      []string           `json:"group_ids"`
+		SuccessRules  []pack.SuccessRule `json:"success_rules"`
 	}
 	if err := decodeJSON(r, &body); err != nil {
 		writeErr(w, http.StatusBadRequest, "invalid json")
 		return
 	}
 	name, target, countries, groups, err := s.normalizeMonitor(r.Context(), u, body.Name, body.TargetURL, body.IntervalSec, body.MaxNodes, body.CountryCodes, body.GroupIDs)
+	if err != nil {
+		writeAPIError(w, err)
+		return
+	}
+	rules, err := pack.NormalizeSuccessRules(body.SuccessRules)
+	if err != nil {
+		writeAPIError(w, badRequest(err.Error()))
+		return
+	}
+	rulesJSON, err := json.Marshal(rules)
 	if err != nil {
 		writeAPIError(w, err)
 		return
@@ -144,10 +159,10 @@ func (s *Server) createMonitor(w http.ResponseWriter, r *http.Request) {
 	defer tx.Rollback(r.Context())
 	var id string
 	err = tx.QueryRow(r.Context(), `
-		INSERT INTO monitors (owner_id, name, target_url, interval_sec, enabled, public_enabled, public_slug, country_codes, max_nodes, next_run_at)
-		VALUES ($1::uuid, $2, $3, $4, $5, $6, $7, $8, $9, now())
+		INSERT INTO monitors (owner_id, name, target_url, interval_sec, enabled, public_enabled, public_slug, country_codes, max_nodes, success_rules, next_run_at)
+		VALUES ($1::uuid, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, now())
 		RETURNING id::text`,
-		u.ID, name, target, body.IntervalSec, enabled, body.PublicEnabled, slug, countries, body.MaxNodes).Scan(&id)
+		u.ID, name, target, body.IntervalSec, enabled, body.PublicEnabled, slug, countries, body.MaxNodes, string(rulesJSON)).Scan(&id)
 	if err != nil {
 		writeAPIError(w, err)
 		return
@@ -181,14 +196,15 @@ func (s *Server) patchMonitor(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body struct {
-		Name          *string   `json:"name"`
-		TargetURL     *string   `json:"target_url"`
-		IntervalSec   *int      `json:"interval_sec"`
-		Enabled       *bool     `json:"enabled"`
-		PublicEnabled *bool     `json:"public_enabled"`
-		CountryCodes  *[]string `json:"country_codes"`
-		MaxNodes      *int      `json:"max_nodes"`
-		GroupIDs      *[]string `json:"group_ids"`
+		Name          *string             `json:"name"`
+		TargetURL     *string             `json:"target_url"`
+		IntervalSec   *int                `json:"interval_sec"`
+		Enabled       *bool               `json:"enabled"`
+		PublicEnabled *bool               `json:"public_enabled"`
+		CountryCodes  *[]string           `json:"country_codes"`
+		MaxNodes      *int                `json:"max_nodes"`
+		GroupIDs      *[]string           `json:"group_ids"`
+		SuccessRules  *[]pack.SuccessRule `json:"success_rules"`
 	}
 	if err := decodeJSON(r, &body); err != nil {
 		writeErr(w, http.StatusBadRequest, "invalid json")
@@ -232,6 +248,19 @@ func (s *Server) patchMonitor(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, err)
 		return
 	}
+	rules := current.SuccessRules
+	if body.SuccessRules != nil {
+		rules, err = pack.NormalizeSuccessRules(*body.SuccessRules)
+		if err != nil {
+			writeAPIError(w, badRequest(err.Error()))
+			return
+		}
+	}
+	rulesJSON, err := json.Marshal(rules)
+	if err != nil {
+		writeAPIError(w, err)
+		return
+	}
 	publicEnabled := current.PublicEnabled
 	if body.PublicEnabled != nil {
 		publicEnabled = *body.PublicEnabled
@@ -255,8 +284,8 @@ func (s *Server) patchMonitor(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer tx.Rollback(r.Context())
-	q := `UPDATE monitors SET name=$2, target_url=$3, interval_sec=$4, enabled=$5, public_enabled=$6, public_slug=$7, country_codes=$8, max_nodes=$9`
-	args := []any{id, name, target, interval, enabled, publicEnabled, slug, countries, maxNodes}
+	q := `UPDATE monitors SET name=$2, target_url=$3, interval_sec=$4, enabled=$5, public_enabled=$6, public_slug=$7, country_codes=$8, max_nodes=$9, success_rules=$10::jsonb`
+	args := []any{id, name, target, interval, enabled, publicEnabled, slug, countries, maxNodes, string(rulesJSON)}
 	if body.Enabled != nil && enabled && !current.Enabled {
 		q += `, next_run_at = now()`
 	}
@@ -535,6 +564,7 @@ SELECT
 	m.public_slug,
 	m.country_codes,
 	m.max_nodes,
+	m.success_rules,
 	m.created_at,
 	u.email,
 	COALESCE((
@@ -573,10 +603,10 @@ LEFT JOIN LATERAL (
 
 func scanMonitor(row interface{ Scan(...any) error }) (monitorRow, error) {
 	var m monitorRow
-	var raw []byte
+	var rawGroups, rawRules []byte
 	err := row.Scan(
 		&m.ID, &m.Name, &m.TargetURL, &m.IntervalSec, &m.Enabled, &m.PublicEnabled, &m.PublicSlug,
-		&m.CountryCodes, &m.MaxNodes, &m.CreatedAt, &m.OwnerEmail, &raw, &m.LastStatus, &m.LastCheckedAt, &m.Uptime24h,
+		&m.CountryCodes, &m.MaxNodes, &rawRules, &m.CreatedAt, &m.OwnerEmail, &rawGroups, &m.LastStatus, &m.LastCheckedAt, &m.Uptime24h,
 	)
 	if err != nil {
 		return m, err
@@ -584,7 +614,15 @@ func scanMonitor(row interface{ Scan(...any) error }) (monitorRow, error) {
 	if m.CountryCodes == nil {
 		m.CountryCodes = []string{}
 	}
-	m.Groups, err = unmarshalGroups(raw)
+	if len(rawRules) > 0 {
+		if err := json.Unmarshal(rawRules, &m.SuccessRules); err != nil {
+			return m, err
+		}
+	}
+	if m.SuccessRules == nil {
+		m.SuccessRules = []pack.SuccessRule{}
+	}
+	m.Groups, err = unmarshalGroups(rawGroups)
 	return m, err
 }
 

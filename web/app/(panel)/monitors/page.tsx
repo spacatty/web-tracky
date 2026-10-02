@@ -7,6 +7,7 @@ import { useMemo, useState } from "react";
 import { toast } from "sonner";
 
 import { DataTable } from "@/components/data-table";
+import { SuccessRulesField } from "@/components/success-rules";
 import { StatusPill } from "@/components/status-pill";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -18,6 +19,7 @@ import { Slider } from "@/components/ui/slider";
 import { Switch } from "@/components/ui/switch";
 import { ApiError, api } from "@/lib/api";
 import { formatAgo, formatInterval, formatUptime, intervalStops } from "@/lib/format";
+import { blankRule, compileRules, type DraftRule } from "@/lib/success";
 import type { Group, Monitor, PublicConfig } from "@/lib/types";
 
 export default function MonitorsPage() {
@@ -88,9 +90,13 @@ function CreateMonitor({ open, onOpenChange, onCreated }: { open: boolean; onOpe
   const [enabled, setEnabled] = useState(true);
   const [share, setShare] = useState(false);
   const [groupIDs, setGroupIDs] = useState<string[]>([]);
+  const [customSuccess, setCustomSuccess] = useState(false);
+  const [successRules, setSuccessRules] = useState<DraftRule[]>([blankRule()]);
   const save = useMutation({
-    mutationFn: () =>
-      api<Monitor>("/api/monitors", {
+    mutationFn: () => {
+      const compiled = compileRules(customSuccess, successRules);
+      if (!compiled.ok) return Promise.reject(new Error(compiled.error));
+      return api<Monitor>("/api/monitors", {
         method: "POST",
         body: JSON.stringify({
           name,
@@ -101,19 +107,21 @@ function CreateMonitor({ open, onOpenChange, onCreated }: { open: boolean; onOpe
           country_codes: countries.split(/[,\s]+/).filter(Boolean),
           max_nodes: maxNodes,
           group_ids: groupIDs,
+          success_rules: compiled.rules,
         }),
-      }),
+      });
+    },
     onSuccess: (monitor) => {
       toast.success("Monitor created");
       onOpenChange(false);
       onCreated(monitor.id);
     },
-    onError: (error) => toast.error(error instanceof ApiError ? error.message : "Could not create monitor"),
+    onError: (error) => toast.error(error instanceof ApiError ? error.message : error instanceof Error ? error.message : "Could not create monitor"),
   });
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-lg">
+      <DialogContent className="max-h-[calc(100vh-2rem)] overflow-y-auto sm:max-w-xl">
         <DialogHeader>
           <DialogTitle>Track a website</DialogTitle>
         </DialogHeader>
@@ -164,6 +172,7 @@ function CreateMonitor({ open, onOpenChange, onCreated }: { open: boolean; onOpe
               </label>
             ))}
           </div>
+          <SuccessRulesField enabled={customSuccess} rules={successRules} onEnabledChange={setCustomSuccess} onChange={setSuccessRules} />
           <div className="flex items-center justify-between">
             <Label>Enabled</Label>
             <Switch checked={enabled} onCheckedChange={setEnabled} />

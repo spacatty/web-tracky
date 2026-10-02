@@ -9,6 +9,7 @@ import (
 	"net/http/httptrace"
 	"os"
 	"runtime"
+	"strings"
 	"sync"
 	"time"
 
@@ -21,12 +22,17 @@ type Job struct {
 }
 
 type Engine struct {
-	Version string
-	mu      sync.Mutex
-	lastRX  uint64
-	lastTX  uint64
-	lastAt  time.Time
-	have    bool
+	Version      string
+	mu           sync.Mutex
+	lastRX       uint64
+	lastTX       uint64
+	lastAt       time.Time
+	have         bool
+	speedAt      time.Time
+	speedAttempt time.Time
+	speedDown    float64
+	speedUp      float64
+	speedOK      bool
 }
 
 func New(version string) *Engine {
@@ -46,6 +52,8 @@ func (e *Engine) Run(steps []map[string]any) (map[string]any, error) {
 			value, err = icmpPing(step)
 		case "net.sample":
 			value, err = sampleNet(e)
+		case "net.speed":
+			value, err = e.netSpeed(step)
 		case "host.info":
 			value, err = hostInfo(), nil
 		default:
@@ -110,8 +118,31 @@ func (e *Engine) httpRequest(step map[string]any) (any, error) {
 		return map[string]any{"ok": false, "error": err.Error(), "total_ms": millis(total), "ttfb_ms": millis(ttfb)}, nil
 	}
 	defer res.Body.Close()
-	_, _ = io.Copy(io.Discard, io.LimitReader(res.Body, 1<<20))
-	ok := statusAllowed(res.StatusCode, step["expect_status"])
+	payload, readErr := io.ReadAll(io.LimitReader(res.Body, 64<<10))
+	_, _ = io.Copy(io.Discard, res.Body)
+	if readErr != nil {
+		return map[string]any{
+			"ok":       false,
+			"status":   res.StatusCode,
+			"error":    readErr.Error(),
+			"ttfb_ms":  millis(ttfb),
+			"total_ms": millis(total),
+		}, nil
+	}
+	body := string(payload)
+	var ok bool
+	var reason string
+	if _, custom := step["expect"]; custom {
+		ok = matchExpect(res.StatusCode, body, step["expect"])
+		if !ok {
+			reason = expectMiss(res.StatusCode, step["expect"])
+		}
+	} else {
+		ok = statusAllowed(res.StatusCode, step["expect_status"])
+		if !ok {
+			reason = fmt.Sprintf("status %d", res.StatusCode)
+		}
+	}
 	out := map[string]any{
 		"ok":        ok,
 		"status":    res.StatusCode,
@@ -120,7 +151,7 @@ func (e *Engine) httpRequest(step map[string]any) (any, error) {
 		"final_url": res.Request.URL.String(),
 	}
 	if !ok {
-		out["error"] = fmt.Sprintf("status %d", res.StatusCode)
+		out["error"] = reason
 	}
 	return out, nil
 }
@@ -147,11 +178,11 @@ func icmpPing(step map[string]any) (any, error) {
 	}
 	ok := stats.PacketsRecv > 0
 	out := map[string]any{
-		"ok":    ok,
+		"ok":     ok,
 		"rtt_ms": float64(stats.AvgRtt.Microseconds()) / 1000,
-		"sent":  stats.PacketsSent,
-		"recv":  stats.PacketsRecv,
-		"loss":  stats.PacketLoss,
+		"sent":   stats.PacketsSent,
+		"recv":   stats.PacketsRecv,
+		"loss":   stats.PacketLoss,
 	}
 	if !ok {
 		out["error"] = "no reply"
@@ -180,6 +211,87 @@ func hostInfo() map[string]any {
 		"os":       runtime.GOOS,
 		"arch":     runtime.GOARCH,
 		"kernel":   kernelVersion(),
+	}
+}
+
+type expectRule struct {
+	Status int
+	Body   string
+	Text   string
+	Join   string
+}
+
+func matchExpect(code int, body string, expect any) bool {
+	rules := parseExpect(expect)
+	if len(rules) == 0 {
+		return false
+	}
+	ok := ruleMatches(code, body, rules[0])
+	for _, rule := range rules[1:] {
+		next := ruleMatches(code, body, rule)
+		if rule.Join == "and" {
+			ok = ok && next
+		} else {
+			ok = ok || next
+		}
+	}
+	return ok
+}
+
+func expectMiss(code int, expect any) string {
+	for _, rule := range parseExpect(expect) {
+		if rule.Status == code {
+			return fmt.Sprintf("status %d, body did not match", code)
+		}
+	}
+	return fmt.Sprintf("status %d", code)
+}
+
+func parseExpect(value any) []expectRule {
+	list, ok := value.([]any)
+	if !ok {
+		return nil
+	}
+	out := make([]expectRule, 0, len(list))
+	for _, item := range list {
+		fields, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		status, ok := numberOK(fields["status"])
+		if !ok {
+			continue
+		}
+		body, _ := fields["body"].(string)
+		if body == "" {
+			body = "any"
+		}
+		text, _ := fields["text"].(string)
+		join, _ := fields["join"].(string)
+		if join != "and" {
+			join = "or"
+		}
+		out = append(out, expectRule{Status: int(status), Body: body, Text: text, Join: join})
+	}
+	return out
+}
+
+func ruleMatches(code int, body string, rule expectRule) bool {
+	if code != rule.Status {
+		return false
+	}
+	switch rule.Body {
+	case "empty":
+		return strings.TrimSpace(body) == ""
+	case "contains":
+		if strings.TrimSpace(rule.Text) == "" {
+			return false
+		}
+		return strings.Contains(strings.ToLower(body), strings.ToLower(rule.Text))
+	case "any":
+		return true
+	default:
+		return false
 	}
 }
 

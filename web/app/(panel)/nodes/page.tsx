@@ -2,12 +2,13 @@
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { ColumnDef } from "@tanstack/react-table";
-import { useMemo, useState } from "react";
+import { RefreshCwIcon } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Area, AreaChart } from "recharts";
 import { toast } from "sonner";
 
 import { DataTable } from "@/components/data-table";
-import { StatusPill } from "@/components/status-pill";
+import { LocationLabel } from "@/components/location";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { ChartContainer, type ChartConfig } from "@/components/ui/chart";
@@ -16,13 +17,15 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { ApiError, api } from "@/lib/api";
-import { formatAgo, formatLink, formatMs, formatRate, locationLabel } from "@/lib/format";
+import { formatAgo, formatLink, formatMs, formatSpeed, locationLabel } from "@/lib/format";
 import type { FleetNode, Group, MetricPoint, Me } from "@/lib/types";
 
 const chartConfig = {
-  rx_bps: { label: "In", color: "var(--chart-1)" },
-  tx_bps: { label: "Out", color: "var(--chart-2)" },
+  down_bps: { label: "Download", color: "var(--chart-1)" },
+  up_bps: { label: "Upload", color: "var(--chart-2)" },
 } satisfies ChartConfig;
+
+type PendingRefresh = { speedAt: string | null; token: number };
 
 export default function NodesPage() {
   const client = useQueryClient();
@@ -30,30 +33,95 @@ export default function NodesPage() {
   const nodes = useQuery({ queryKey: ["nodes"], queryFn: () => api<FleetNode[]>("/api/nodes"), refetchInterval: 5000 });
   const groups = useQuery({ queryKey: ["groups"], queryFn: () => api<Group[]>("/api/groups") });
   const [selected, setSelected] = useState<FleetNode | null>(null);
+  const [pending, setPending] = useState<Record<string, PendingRefresh>>({});
+  const refreshToken = useRef(0);
+  const seenSpeed = useRef<Record<string, string | null>>({});
   const admin = me.data?.role === "admin";
+
+  const queueRefresh = (node: FleetNode) => {
+    const token = ++refreshToken.current;
+    setPending((current) => ({ ...current, [node.id]: { speedAt: node.speed_at, token } }));
+    window.setTimeout(() => {
+      setPending((current) => {
+        const entry = current[node.id];
+        if (!entry || entry.token !== token) return current;
+        toast.error(`${node.name} did not report a new measurement`);
+        const next = { ...current };
+        delete next[node.id];
+        return next;
+      });
+    }, 45000);
+  };
+
+  const refreshOne = useMutation({
+    mutationFn: (node: FleetNode) => api(`/api/nodes/${node.id}/refresh`, { method: "POST" }),
+    onSuccess: (_data, node) => {
+      queueRefresh(node);
+      toast.success(node.online ? `Measuring ${node.name}` : `Queued for ${node.name}`);
+    },
+    onError: (error) => toast.error(error instanceof ApiError ? error.message : "Could not refresh metrics"),
+  });
+  const refreshAll = useMutation({
+    mutationFn: () => api<{ count: number }>("/api/nodes/refresh", { method: "POST" }),
+    onSuccess: (result) => {
+      for (const node of nodes.data ?? []) {
+        if (node.online) queueRefresh(node);
+      }
+      toast.success(result.count === 0 ? "No online machines to measure" : `Measuring ${result.count} machine${result.count === 1 ? "" : "s"}`);
+    },
+    onError: (error) => toast.error(error instanceof ApiError ? error.message : "Could not refresh metrics"),
+  });
+
+  useEffect(() => {
+    if (!nodes.data) return;
+    setPending((current) => {
+      let changed = false;
+      const next = { ...current };
+      for (const node of nodes.data ?? []) {
+        const entry = next[node.id];
+        if (entry && entry.speedAt !== node.speed_at) {
+          delete next[node.id];
+          changed = true;
+        }
+      }
+      return changed ? next : current;
+    });
+    for (const node of nodes.data) {
+      const prev = seenSpeed.current[node.id];
+      if (prev !== undefined && prev !== node.speed_at) {
+        void client.invalidateQueries({ queryKey: ["node-metrics", node.id] });
+      }
+      seenSpeed.current[node.id] = node.speed_at;
+    }
+  }, [nodes.data, client]);
 
   const columns = useMemo<ColumnDef<FleetNode>[]>(
     () => [
       {
-        accessorKey: "name",
+        id: "name",
+        accessorFn: (row) => [row.name, row.hostname, row.ip].filter(Boolean).join(" "),
         header: "Node",
         cell: ({ row }) => (
           <div>
-            <div className="font-medium">{row.original.name}</div>
-            <div className="text-xs text-muted-foreground">{row.original.hostname || row.original.os}</div>
+            <div className="flex items-center gap-2">
+              <span
+                className={`size-2 shrink-0 rounded-full ${row.original.online ? "bg-emerald-500" : "bg-red-500"}`}
+                title={row.original.online ? "Online" : "Offline"}
+              />
+              <span className="font-medium">{row.original.name}</span>
+            </div>
+            <div className="pl-4 text-xs text-muted-foreground">{row.original.hostname || row.original.os || "—"}</div>
+            {row.original.ip ? <div className="pl-4"><CopyIP ip={row.original.ip} /></div> : null}
           </div>
         ),
-      },
-      {
-        id: "status",
-        header: "Status",
-        accessorFn: (row) => (row.online ? "online" : "offline"),
-        cell: ({ row }) => <StatusPill status={row.original.online ? "online" : "offline"} />,
       },
       {
         id: "location",
         header: "Location",
         accessorFn: (row) => locationLabel(row.city, row.country_code, row.country),
+        cell: ({ row }) => (
+          <LocationLabel city={row.original.city} code={row.original.country_code} name={row.original.country} />
+        ),
       },
       {
         id: "groups",
@@ -74,11 +142,15 @@ export default function NodesPage() {
         cell: ({ row }) => <span className="font-mono text-xs">{formatMs(row.original.api_rtt_ms)}</span>,
       },
       {
-        id: "traffic",
-        header: "Traffic",
+        id: "speed",
+        header: "Speed",
+        accessorFn: (row) => row.down_bps + row.up_bps,
         cell: ({ row }) => (
-          <span className="font-mono text-xs">
-            ↓ {formatRate(row.original.rx_bps)} ↑ {formatRate(row.original.tx_bps)}
+          <span
+            className="font-mono text-xs"
+            title={row.original.speed_at ? `Tested ${formatAgo(row.original.speed_at)}` : "Not tested yet"}
+          >
+            ↓ {formatSpeed(row.original.down_bps)} ↑ {formatSpeed(row.original.up_bps)}
           </span>
         ),
       },
@@ -93,37 +165,66 @@ export default function NodesPage() {
         ),
       },
       {
-        id: "version",
-        header: "Core",
-        accessorFn: (row) => `${row.core_version} ${row.pack_version}`,
-        cell: ({ row }) => (
-          <span className="font-mono text-xs">
-            {row.original.core_version || "—"} / p{row.original.pack_version}
-          </span>
-        ),
-      },
-      {
         id: "seen",
         header: "Seen",
         accessorFn: (row) => row.last_seen_at ?? "",
         cell: ({ row }) => <span className="text-xs text-muted-foreground">{formatAgo(row.original.last_seen_at)}</span>,
       },
+      ...(admin
+        ? [
+            {
+              id: "refresh",
+              header: "",
+              enableHiding: false,
+              enableSorting: false,
+              cell: ({ row }) => {
+                const measuring = Boolean(pending[row.original.id]);
+                return (
+                  <Button
+                    variant="ghost"
+                    size="icon-xs"
+                    title={measuring ? "Measuring speed" : "Refresh metrics"}
+                    disabled={measuring}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      refreshOne.mutate(row.original);
+                    }}
+                  >
+                    <RefreshCwIcon className={measuring ? "animate-spin" : ""} />
+                  </Button>
+                );
+              },
+            } satisfies ColumnDef<FleetNode>,
+          ]
+        : []),
     ],
-    [],
+    [admin, pending, refreshOne],
   );
+
+  const liveSelected = selected ? (nodes.data?.find((node) => node.id === selected.id) ?? selected) : null;
 
   return (
     <div className="space-y-5">
-      <div>
-        <p className="font-mono text-[11px] tracking-[0.16em] text-muted-foreground uppercase">Agents</p>
-        <h1 className="mt-1 text-2xl font-semibold tracking-tight">Nodes</h1>
-        <p className="mt-1 text-sm text-muted-foreground">Heartbeat, location, and interface rates from each enrolled machine.</p>
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <p className="font-mono text-[11px] tracking-[0.16em] text-muted-foreground uppercase">Agents</p>
+          <h1 className="mt-1 text-2xl font-semibold tracking-tight">Nodes</h1>
+          <p className="mt-1 text-sm text-muted-foreground">Heartbeat, location, and measured download and upload speed from each machine.</p>
+        </div>
+        {admin ? (
+          <Button variant="outline" onClick={() => refreshAll.mutate()} disabled={refreshAll.isPending}>
+            <RefreshCwIcon className={refreshAll.isPending ? "animate-spin" : ""} />
+            Refresh metrics
+          </Button>
+        ) : null}
       </div>
       <DataTable columns={columns} data={nodes.data ?? []} searchPlaceholder="Search nodes" onRowClick={setSelected} empty="No machines enrolled yet." />
       <NodeSheet
-        node={selected}
+        node={liveSelected}
         admin={admin}
         groups={groups.data ?? []}
+        refreshing={Boolean(liveSelected && pending[liveSelected.id])}
+        onRefresh={() => liveSelected && refreshOne.mutate(liveSelected)}
         onClose={() => setSelected(null)}
         onSaved={() => {
           client.invalidateQueries({ queryKey: ["nodes"] });
@@ -138,12 +239,16 @@ function NodeSheet({
   node,
   admin,
   groups,
+  refreshing,
+  onRefresh,
   onClose,
   onSaved,
 }: {
   node: FleetNode | null;
   admin: boolean;
   groups: Group[];
+  refreshing: boolean;
+  onRefresh: () => void;
   onClose: () => void;
   onSaved: () => void;
 }) {
@@ -192,22 +297,32 @@ function NodeSheet({
           <>
             <SheetHeader>
               <SheetTitle>{node.name}</SheetTitle>
-              <SheetDescription>{locationLabel(node.city, node.country_code, node.country) || "Location unknown"}</SheetDescription>
+              <SheetDescription>
+                <LocationLabel city={node.city} code={node.country_code} name={node.country} className="block" />
+                <span className="mt-1 block font-mono">{node.hostname || node.os || "—"}</span>
+              </SheetDescription>
             </SheetHeader>
             <div className="space-y-4 px-4 pb-6">
+              {node.ip ? <CopyIP ip={node.ip} /> : null}
               <div className="grid grid-cols-2 gap-2 text-xs">
                 <Meta label="API RTT" value={formatMs(node.api_rtt_ms)} />
                 <Meta label="Link" value={formatLink(node.link_speed_bps)} />
-                <Meta label="In" value={formatRate(node.rx_bps)} />
-                <Meta label="Out" value={formatRate(node.tx_bps)} />
+                <Meta label="Download" value={formatSpeed(node.down_bps)} />
+                <Meta label="Upload" value={formatSpeed(node.up_bps)} />
+                <Meta label="Tested" value={refreshing ? "Measuring…" : node.speed_at ? formatAgo(node.speed_at) : "—"} />
                 <Meta label="Adapter" value={node.adapter || "—"} />
                 <Meta label="OS" value={[node.os, node.arch].filter(Boolean).join(" ") || "—"} />
               </div>
-              {admin && node.ip ? <p className="font-mono text-xs text-muted-foreground">{node.ip}</p> : null}
+              {admin ? (
+                <Button type="button" variant="outline" size="sm" disabled={refreshing} onClick={onRefresh}>
+                  <RefreshCwIcon className={refreshing ? "animate-spin" : ""} />
+                  {refreshing ? "Measuring" : "Refresh metrics"}
+                </Button>
+              ) : null}
               <ChartContainer config={chartConfig} className="aspect-auto h-24 w-full">
                 <AreaChart data={metrics.data ?? []}>
-                  <Area dataKey="rx_bps" stroke="var(--color-rx_bps)" fill="var(--color-rx_bps)" fillOpacity={0.2} />
-                  <Area dataKey="tx_bps" stroke="var(--color-tx_bps)" fill="var(--color-tx_bps)" fillOpacity={0.15} />
+                  <Area dataKey="down_bps" stroke="var(--color-down_bps)" fill="var(--color-down_bps)" fillOpacity={0.2} />
+                  <Area dataKey="up_bps" stroke="var(--color-up_bps)" fill="var(--color-up_bps)" fillOpacity={0.15} />
                 </AreaChart>
               </ChartContainer>
               {admin ? (
@@ -249,6 +364,25 @@ function NodeSheet({
         ) : null}
       </SheetContent>
     </Sheet>
+  );
+}
+
+function CopyIP({ ip }: { ip: string }) {
+  return (
+    <button
+      type="button"
+      title="Copy IP"
+      className="block max-w-full cursor-copy truncate text-left font-mono text-[11px] text-muted-foreground hover:text-foreground"
+      onClick={(event) => {
+        event.stopPropagation();
+        void navigator.clipboard.writeText(ip).then(
+          () => toast.success("IP copied"),
+          () => toast.error("Could not copy IP"),
+        );
+      }}
+    >
+      {ip}
+    </button>
   );
 }
 

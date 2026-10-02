@@ -50,6 +50,9 @@ export type FleetNode = {
   link_speed_bps: number;
   rx_bps: number;
   tx_bps: number;
+  down_bps: number;
+  up_bps: number;
+  speed_at: string | null;
   api_rtt_ms: number | null;
   hostname: string;
   os: string;
@@ -61,8 +64,8 @@ export type FleetNode = {
 
 export type MetricPoint = {
   t: string;
-  rx_bps: number;
-  tx_bps: number;
+  down_bps: number;
+  up_bps: number;
   api_rtt_ms: number | null;
 };
 
@@ -86,6 +89,13 @@ export type EnrollToken = {
   created_at: string;
 };
 
+export type SuccessRule = {
+  status: number;
+  body: "any" | "empty" | "contains";
+  text?: string;
+  join?: "and" | "or";
+};
+
 export type Monitor = {
   id: string;
   name: string;
@@ -96,6 +106,7 @@ export type Monitor = {
   public_slug: string | null;
   country_codes: string[];
   max_nodes: number;
+  success_rules?: SuccessRule[];
   groups: GroupRef[];
   last_status: string;
   last_checked_at: string | null;

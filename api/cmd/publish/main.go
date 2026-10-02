@@ -24,7 +24,7 @@ type manifest struct {
 }
 
 func main() {
-	version := flag.String("version", "0.1.0", "agent core version")
+	version := flag.String("version", "0.2.0", "agent core version")
 	out := flag.String("out", "dist/agent", "release directory")
 	agent := flag.String("agent", "agent", "agent module directory")
 	flag.Parse()

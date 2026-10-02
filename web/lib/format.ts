@@ -17,6 +17,20 @@ export function formatRate(bps?: number | null) {
   return `${value.toFixed(digits)} ${units[index]}`;
 }
 
+export function formatSpeed(bps?: number | null) {
+  if (bps == null || bps <= 0) return "—";
+  if (bps >= 1_000_000_000) {
+    const value = bps / 1_000_000_000;
+    return `${value >= 10 ? value.toFixed(0) : value.toFixed(1)} Gbps`;
+  }
+  if (bps >= 1_000_000) {
+    const value = bps / 1_000_000;
+    return `${value >= 100 ? value.toFixed(0) : value.toFixed(1)} Mbps`;
+  }
+  if (bps >= 1_000) return `${Math.round(bps / 1_000)} Kbps`;
+  return `${Math.round(bps)} bps`;
+}
+
 export function formatLink(bps?: number | null) {
   if (!bps) return "—";
   const mbps = bps / 1_000_000;
@@ -59,9 +73,7 @@ export function formatInterval(seconds: number) {
 
 export function locationLabel(city?: string, code?: string, name?: string) {
   if (city && code) return `${code} ${city}`;
-  if (code) return code;
-  if (city) return city;
-  return name || "Unknown";
+  return code || city || name || "Unknown";
 }
 
 export const INTERVAL_STOPS = [30, 60, 120, 300, 600, 900, 1800, 3600];

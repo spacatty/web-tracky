@@ -20,11 +20,11 @@ type Document struct {
 }
 
 type Cache struct {
-	path   string
-	mu     sync.Mutex
-	mod    time.Time
-	doc    Document
-	raw    []byte
+	path string
+	mu   sync.Mutex
+	mod  time.Time
+	doc  Document
+	raw  []byte
 }
 
 func NewCache(path string) *Cache {
@@ -87,7 +87,59 @@ func Parse(raw []byte) (Document, error) {
 	return doc, nil
 }
 
-func RenderCheck(doc Document, target string) (json.RawMessage, error) {
+type SuccessRule struct {
+	Status int    `json:"status"`
+	Body   string `json:"body"`
+	Text   string `json:"text,omitempty"`
+	Join   string `json:"join,omitempty"`
+}
+
+func NormalizeSuccessRules(rules []SuccessRule) ([]SuccessRule, error) {
+	if len(rules) == 0 {
+		return []SuccessRule{}, nil
+	}
+	if len(rules) > 8 {
+		return nil, fmt.Errorf("at most 8 success rules")
+	}
+	out := make([]SuccessRule, 0, len(rules))
+	for i, rule := range rules {
+		if rule.Status < 100 || rule.Status > 599 {
+			return nil, fmt.Errorf("success rule %d: status must be 100-599", i+1)
+		}
+		body := rule.Body
+		if body == "" {
+			body = "any"
+		}
+		if body != "any" && body != "empty" && body != "contains" {
+			return nil, fmt.Errorf("success rule %d: body must be any, empty, or contains", i+1)
+		}
+		text := strings.TrimSpace(rule.Text)
+		if body == "contains" {
+			if text == "" {
+				return nil, fmt.Errorf("success rule %d: response text is required", i+1)
+			}
+			if len(text) > 200 {
+				return nil, fmt.Errorf("success rule %d: response text is too long", i+1)
+			}
+		} else {
+			text = ""
+		}
+		join := ""
+		if i > 0 {
+			join = rule.Join
+			if join == "" {
+				join = "or"
+			}
+			if join != "and" && join != "or" {
+				return nil, fmt.Errorf("success rule %d: join must be and or or", i+1)
+			}
+		}
+		out = append(out, SuccessRule{Status: rule.Status, Body: body, Text: text, Join: join})
+	}
+	return out, nil
+}
+
+func RenderCheck(doc Document, target string, rules []SuccessRule) (json.RawMessage, error) {
 	u, err := url.Parse(target)
 	if err != nil {
 		return nil, err
@@ -113,5 +165,31 @@ func RenderCheck(doc Document, target string) (json.RawMessage, error) {
 	if !json.Valid([]byte(rendered)) {
 		return nil, fmt.Errorf("rendered check program is invalid json")
 	}
-	return json.RawMessage(rendered), nil
+	if len(rules) == 0 {
+		return json.RawMessage(rendered), nil
+	}
+	var steps []map[string]any
+	if err := json.Unmarshal([]byte(rendered), &steps); err != nil {
+		return nil, err
+	}
+	expect := make([]any, len(rules))
+	for i, rule := range rules {
+		item := map[string]any{
+			"status": rule.Status,
+			"body":   rule.Body,
+		}
+		if rule.Text != "" {
+			item["text"] = rule.Text
+		}
+		if rule.Join != "" {
+			item["join"] = rule.Join
+		}
+		expect[i] = item
+	}
+	for _, step := range steps {
+		if op, _ := step["op"].(string); op == "http.request" {
+			step["expect"] = expect
+		}
+	}
+	return json.Marshal(steps)
 }

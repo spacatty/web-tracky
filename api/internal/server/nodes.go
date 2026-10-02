@@ -22,6 +22,9 @@ type nodeRow struct {
 	LinkSpeedBps int64      `json:"link_speed_bps"`
 	RxBps        float64    `json:"rx_bps"`
 	TxBps        float64    `json:"tx_bps"`
+	DownBps      float64    `json:"down_bps"`
+	UpBps        float64    `json:"up_bps"`
+	SpeedAt      *time.Time `json:"speed_at"`
 	APIRTTMS     *float64   `json:"api_rtt_ms"`
 	Hostname     string     `json:"hostname"`
 	OS           string     `json:"os"`
@@ -50,7 +53,7 @@ func (s *Server) listNodes(w http.ResponseWriter, r *http.Request) {
 	defer rows.Close()
 	out := []nodeRow{}
 	for rows.Next() {
-		row, err := scanNode(rows, u.Admin())
+		row, err := scanNode(rows)
 		if err != nil {
 			writeAPIError(w, err)
 			return
@@ -85,7 +88,7 @@ func (s *Server) nodeMetrics(w http.ResponseWriter, r *http.Request) {
 		hours = 24
 	}
 	rows, err := s.pool.Query(r.Context(), `
-		SELECT date_trunc('minute', ts), avg(rx_bps), avg(tx_bps), avg(api_rtt_ms)
+		SELECT date_trunc('minute', ts), COALESCE(avg(down_bps), 0), COALESCE(avg(up_bps), 0), avg(api_rtt_ms)
 		FROM node_metrics
 		WHERE node_id = $1::uuid AND ts > now() - make_interval(hours => $2)
 		GROUP BY 1
@@ -97,14 +100,14 @@ func (s *Server) nodeMetrics(w http.ResponseWriter, r *http.Request) {
 	defer rows.Close()
 	type point struct {
 		T        time.Time `json:"t"`
-		RxBps    float64   `json:"rx_bps"`
-		TxBps    float64   `json:"tx_bps"`
+		DownBps  float64   `json:"down_bps"`
+		UpBps    float64   `json:"up_bps"`
 		APIRTTMS *float64  `json:"api_rtt_ms"`
 	}
 	out := []point{}
 	for rows.Next() {
 		var p point
-		if err := rows.Scan(&p.T, &p.RxBps, &p.TxBps, &p.APIRTTMS); err != nil {
+		if err := rows.Scan(&p.T, &p.DownBps, &p.UpBps, &p.APIRTTMS); err != nil {
 			writeAPIError(w, err)
 			return
 		}
@@ -115,6 +118,50 @@ func (s *Server) nodeMetrics(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, out)
+}
+
+func (s *Server) refreshNodeMetrics(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	tag, err := s.pool.Exec(r.Context(), `UPDATE nodes SET metrics_refresh = true WHERE id = $1::uuid`, id)
+	if err != nil {
+		writeAPIError(w, err)
+		return
+	}
+	if tag.RowsAffected() == 0 {
+		writeAPIError(w, errNotFound)
+		return
+	}
+	s.waker.Notify(id)
+	writeJSON(w, http.StatusAccepted, map[string]string{"status": "queued"})
+}
+
+func (s *Server) refreshAllMetrics(w http.ResponseWriter, r *http.Request) {
+	rows, err := s.pool.Query(r.Context(), `
+		UPDATE nodes SET metrics_refresh = true
+		WHERE last_seen_at IS NOT NULL AND last_seen_at > now() - make_interval(secs => $1)
+		RETURNING id::text`, s.offlineAfter(r.Context()))
+	if err != nil {
+		writeAPIError(w, err)
+		return
+	}
+	defer rows.Close()
+	ids := []string{}
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			writeAPIError(w, err)
+			return
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		writeAPIError(w, err)
+		return
+	}
+	for _, id := range ids {
+		s.waker.Notify(id)
+	}
+	writeJSON(w, http.StatusAccepted, map[string]any{"status": "queued", "count": len(ids)})
 }
 
 func (s *Server) patchNode(w http.ResponseWriter, r *http.Request) {
@@ -277,7 +324,7 @@ func (s *Server) visibleNode(r *http.Request, id string, u User) (nodeRow, error
 		}
 		return nodeRow{}, errNotFound
 	}
-	return scanNode(rows, u.Admin())
+	return scanNode(rows)
 }
 
 const nodeSelectSQL = `
@@ -298,6 +345,9 @@ SELECT
 	n.link_speed_bps,
 	n.rx_bps,
 	n.tx_bps,
+	n.down_bps,
+	n.up_bps,
+	n.speed_at,
 	n.api_rtt_ms,
 	n.hostname,
 	n.os,
@@ -320,26 +370,20 @@ type nodeScanner interface {
 	Scan(dest ...any) error
 }
 
-func scanNode(row nodeScanner, admin bool) (nodeRow, error) {
+func scanNode(row nodeScanner) (nodeRow, error) {
 	var n nodeRow
 	var raw []byte
 	err := row.Scan(
 		&n.ID, &n.Name, &n.Online, &n.LastSeenAt, &n.CoreVersion, &n.PackVersion, &n.IP,
 		&n.Country, &n.CountryCode, &n.City, &n.Latitude, &n.Longitude, &n.Adapter,
-		&n.LinkSpeedBps, &n.RxBps, &n.TxBps, &n.APIRTTMS, &n.Hostname, &n.OS, &n.Arch,
+		&n.LinkSpeedBps, &n.RxBps, &n.TxBps, &n.DownBps, &n.UpBps, &n.SpeedAt, &n.APIRTTMS, &n.Hostname, &n.OS, &n.Arch,
 		&n.Kernel, &n.CreatedAt, &raw,
 	)
 	if err != nil {
 		return n, err
 	}
 	n.Groups, err = unmarshalGroups(raw)
-	if err != nil {
-		return n, err
-	}
-	if !admin {
-		n.IP = ""
-	}
-	return n, nil
+	return n, err
 }
 
 func (s *Server) overview(w http.ResponseWriter, r *http.Request) {

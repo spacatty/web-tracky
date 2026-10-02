@@ -113,6 +113,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("POST /api/auth/login", s.login)
 	mux.HandleFunc("POST /api/auth/logout", s.logout)
 	mux.HandleFunc("GET /api/auth/me", s.requireUser(s.me))
+	mux.HandleFunc("POST /api/auth/password", s.requireUser(s.changePassword))
 	mux.HandleFunc("GET /api/overview", s.requireUser(s.overview))
 
 	mux.HandleFunc("GET /api/users", s.requireAdmin(s.listUsers))
@@ -129,6 +130,8 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /api/nodes", s.requireUser(s.listNodes))
 	mux.HandleFunc("GET /api/nodes/{id}", s.requireUser(s.getNode))
 	mux.HandleFunc("GET /api/nodes/{id}/metrics", s.requireUser(s.nodeMetrics))
+	mux.HandleFunc("POST /api/nodes/refresh", s.requireAdmin(s.refreshAllMetrics))
+	mux.HandleFunc("POST /api/nodes/{id}/refresh", s.requireAdmin(s.refreshNodeMetrics))
 	mux.HandleFunc("PATCH /api/nodes/{id}", s.requireAdmin(s.patchNode))
 	mux.HandleFunc("DELETE /api/nodes/{id}", s.requireAdmin(s.deleteNode))
 

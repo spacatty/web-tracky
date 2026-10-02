@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"log"
 	"time"
 
@@ -127,20 +128,27 @@ func (s *Server) insertRun(ctx context.Context, tx pgx.Tx, monitorID, trigger st
 	var target string
 	var countries []string
 	var maxNodes, interval int
+	var rulesRaw []byte
 	err := tx.QueryRow(ctx, `
-		SELECT target_url, country_codes, max_nodes, interval_sec
-		FROM monitors WHERE id = $1::uuid FOR UPDATE`, monitorID).Scan(&target, &countries, &maxNodes, &interval)
+		SELECT target_url, country_codes, max_nodes, interval_sec, success_rules
+		FROM monitors WHERE id = $1::uuid FOR UPDATE`, monitorID).Scan(&target, &countries, &maxNodes, &interval, &rulesRaw)
 	if err != nil {
 		return runView{}, err
 	}
 	if countries == nil {
 		countries = []string{}
 	}
+	var rules []pack.SuccessRule
+	if len(rulesRaw) > 0 {
+		if err := json.Unmarshal(rulesRaw, &rules); err != nil {
+			return runView{}, err
+		}
+	}
 	doc, _, err := s.packs.Load()
 	if err != nil {
 		return runView{}, err
 	}
-	program, err := pack.RenderCheck(doc, target)
+	program, err := pack.RenderCheck(doc, target, rules)
 	if err != nil {
 		return runView{}, err
 	}

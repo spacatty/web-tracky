@@ -22,12 +22,13 @@ func (s *Server) heartbeat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body struct {
-		CoreVersion string         `json:"core_version"`
-		PackVersion int            `json:"pack_version"`
-		APIRTTMS    *float64       `json:"api_rtt_ms"`
-		GOOS        string         `json:"goos"`
-		GOARCH      string         `json:"goarch"`
-		Metrics     map[string]any `json:"metrics"`
+		CoreVersion    string         `json:"core_version"`
+		PackVersion    int            `json:"pack_version"`
+		APIRTTMS       *float64       `json:"api_rtt_ms"`
+		GOOS           string         `json:"goos"`
+		GOARCH         string         `json:"goarch"`
+		Metrics        map[string]any `json:"metrics"`
+		MetricsRefresh bool           `json:"metrics_refresh"`
 	}
 	if err := decodeJSON(r, &body); err != nil {
 		writeErr(w, http.StatusBadRequest, "invalid json")
@@ -42,23 +43,40 @@ func (s *Server) heartbeat(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, err)
 		return
 	}
+	if body.MetricsRefresh {
+		if _, err := s.pool.Exec(r.Context(), `UPDATE nodes SET metrics_refresh = false WHERE id = $1::uuid`, nodeID); err != nil {
+			writeAPIError(w, err)
+			return
+		}
+	}
 
 	heldStart := time.Now()
 	deadline := heldStart.Add(time.Duration(doc.HeartbeatSec) * time.Second)
 	var jobs []jobInfo
+	var refresh bool
 	for {
 		jobs, err = s.leaseJobs(r.Context(), nodeID)
 		if err != nil {
 			writeAPIError(w, err)
 			return
 		}
-		if len(jobs) > 0 || !time.Now().Before(deadline) || r.Context().Err() != nil {
+		if err := s.pool.QueryRow(r.Context(), `SELECT metrics_refresh FROM nodes WHERE id = $1::uuid`, nodeID).Scan(&refresh); err != nil {
+			writeAPIError(w, err)
+			return
+		}
+		if len(jobs) > 0 || refresh || !time.Now().Before(deadline) || r.Context().Err() != nil {
 			break
 		}
 		s.waker.Wait(nodeID, time.Until(deadline), r.Context())
 	}
 	if jobs == nil {
 		jobs = []jobInfo{}
+	}
+	if refresh {
+		if _, err := s.pool.Exec(r.Context(), `UPDATE nodes SET metrics_refresh = false WHERE id = $1::uuid`, nodeID); err != nil {
+			writeAPIError(w, err)
+			return
+		}
 	}
 	packPayload := map[string]any{
 		"version":  doc.Version,
@@ -68,12 +86,13 @@ func (s *Server) heartbeat(w http.ResponseWriter, r *http.Request) {
 		packPayload["document"] = json.RawMessage(raw)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"node_id":       nodeID,
-		"held_ms":       time.Since(heldStart).Milliseconds(),
-		"heartbeat_sec": doc.HeartbeatSec,
-		"core":          s.coreInfo(body.GOOS, body.GOARCH),
-		"pack":          packPayload,
-		"jobs":          jobs,
+		"node_id":         nodeID,
+		"held_ms":         time.Since(heldStart).Milliseconds(),
+		"heartbeat_sec":   doc.HeartbeatSec,
+		"core":            s.coreInfo(body.GOOS, body.GOARCH),
+		"pack":            packPayload,
+		"jobs":            jobs,
+		"refresh_metrics": refresh,
 	})
 }
 
@@ -87,6 +106,7 @@ func (s *Server) recordHeartbeat(r *http.Request, nodeID, core string, packVersi
 	}
 	netSample := asMap(metrics["net"])
 	hostSample := asMap(metrics["host"])
+	fresh, down, up, speedAt := speedSample(metrics)
 	rx, _ := asFloat(netSample["rx_bps"])
 	tx, _ := asFloat(netSample["tx_bps"])
 	link, _ := asFloat(netSample["link_speed_bps"])
@@ -118,6 +138,9 @@ func (s *Server) recordHeartbeat(r *http.Request, nodeID, core string, packVersi
 			link_speed_bps = $6,
 			rx_bps = $7,
 			tx_bps = $8,
+			down_bps = CASE WHEN $15::bool THEN $16::float8 ELSE down_bps END,
+			up_bps = CASE WHEN $15::bool THEN $17::float8 ELSE up_bps END,
+			speed_at = CASE WHEN $15::bool THEN COALESCE($18::timestamptz, now()) ELSE speed_at END,
 			api_rtt_ms = $9,
 			hostname = CASE WHEN $10 = '' THEN hostname ELSE $10 END,
 			os = CASE WHEN $11 = '' THEN os ELSE $11 END,
@@ -126,13 +149,19 @@ func (s *Server) recordHeartbeat(r *http.Request, nodeID, core string, packVersi
 			last_sample = $14::jsonb
 		WHERE id = $1::uuid`,
 		nodeID, clampText(core, 40), packVersion, ip, clampText(adapter, 64), int64(link), rx, tx, rtt,
-		clampText(hostname, 80), clampText(osName, 40), clampText(arch, 40), clampText(kernel, 80), string(sample))
+		clampText(hostname, 80), clampText(osName, 40), clampText(arch, 40), clampText(kernel, 80), string(sample),
+		fresh, down, up, speedAt)
 	if err != nil {
 		return err
 	}
+	var downPtr, upPtr *float64
+	if fresh {
+		downPtr = &down
+		upPtr = &up
+	}
 	_, err = s.pool.Exec(r.Context(), `
-		INSERT INTO node_metrics (node_id, rx_bps, tx_bps, link_speed_bps, api_rtt_ms)
-		VALUES ($1::uuid, $2, $3, $4, $5)`, nodeID, rx, tx, int64(link), rtt)
+		INSERT INTO node_metrics (node_id, rx_bps, tx_bps, link_speed_bps, api_rtt_ms, down_bps, up_bps)
+		VALUES ($1::uuid, $2, $3, $4, $5, $6, $7)`, nodeID, rx, tx, int64(link), rtt, downPtr, upPtr)
 	if err != nil {
 		return err
 	}
@@ -140,6 +169,25 @@ func (s *Server) recordHeartbeat(r *http.Request, nodeID, core string, packVersi
 		go s.locateNode(nodeID, ip)
 	}
 	return nil
+}
+
+func speedSample(metrics map[string]any) (bool, float64, float64, *time.Time) {
+	speed := asMap(metrics["speed"])
+	if !asBool(speed["ok"]) {
+		return false, 0, 0, nil
+	}
+	down, _ := asFloat(speed["down_bps"])
+	up, _ := asFloat(speed["up_bps"])
+	if down <= 0 && up <= 0 {
+		return false, 0, 0, nil
+	}
+	var at *time.Time
+	if text, _ := speed["measured_at"].(string); text != "" {
+		if parsed, err := time.Parse(time.RFC3339, text); err == nil {
+			at = &parsed
+		}
+	}
+	return true, down, up, at
 }
 
 func (s *Server) leaseJobs(ctx context.Context, nodeID string) ([]jobInfo, error) {

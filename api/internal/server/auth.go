@@ -113,6 +113,42 @@ func (s *Server) me(w http.ResponseWriter, r *http.Request) {
 	s.writeMe(w, r)
 }
 
+func (s *Server) changePassword(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		CurrentPassword string `json:"current_password"`
+		NewPassword     string `json:"new_password"`
+	}
+	if err := decodeJSON(r, &body); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	if err := validatePassword(body.NewPassword); err != nil {
+		writeAPIError(w, err)
+		return
+	}
+	u := currentUser(r.Context())
+	var hash string
+	err := s.pool.QueryRow(r.Context(), `SELECT password_hash FROM users WHERE id = $1::uuid`, u.ID).Scan(&hash)
+	if err != nil {
+		writeAPIError(w, err)
+		return
+	}
+	if bcrypt.CompareHashAndPassword([]byte(hash), []byte(body.CurrentPassword)) != nil {
+		writeErr(w, http.StatusUnauthorized, "current password is incorrect")
+		return
+	}
+	next, err := bcrypt.GenerateFromPassword([]byte(body.NewPassword), bcrypt.DefaultCost)
+	if err != nil {
+		writeAPIError(w, err)
+		return
+	}
+	if _, err := s.pool.Exec(r.Context(), `UPDATE users SET password_hash = $2 WHERE id = $1::uuid`, u.ID, string(next)); err != nil {
+		writeAPIError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
 func (s *Server) startSession(w http.ResponseWriter, r *http.Request, userID string) error {
 	plain, hash, err := randomToken("ses_")
 	if err != nil {

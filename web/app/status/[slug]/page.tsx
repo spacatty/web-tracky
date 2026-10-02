@@ -3,12 +3,11 @@
 import { useQuery } from "@tanstack/react-query";
 import { useParams } from "next/navigation";
 
-import { LatencyChart, UptimeChart } from "@/components/latency-chart";
-import { LoadBar } from "@/components/load-bar";
+import { MonitorPanel } from "@/components/monitor-panel";
 import { StatusPill } from "@/components/status-pill";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { api } from "@/lib/api";
-import { formatInterval, formatMs, formatUptime, locationLabel } from "@/lib/format";
+import { formatInterval } from "@/lib/format";
+import { describeSuccess } from "@/lib/success";
 import type { MonitorDetail } from "@/lib/types";
 
 export default function PublicStatusPage() {
@@ -25,33 +24,20 @@ export default function PublicStatusPage() {
       {!monitor ? (
         <h1 className="mt-2 text-3xl font-semibold tracking-tight">{query.isError ? "This status page is not available." : "Loading…"}</h1>
       ) : (
-        <div className="space-y-6">
+        <div className="space-y-4">
           <div className="flex flex-wrap items-end justify-between gap-3">
-            <div>
-              <h1 className="mt-2 text-3xl font-semibold tracking-tight">{monitor.name}</h1>
-              <p className="mt-1 font-mono text-sm text-muted-foreground">{monitor.target_url}</p>
+            <div className="min-w-0">
+              <div className="mt-1 flex items-center gap-2">
+                <h1 className="text-2xl font-semibold tracking-tight">{monitor.name}</h1>
+                <StatusPill status={monitor.last_status} />
+              </div>
+              <p className="mt-1 font-mono text-xs text-muted-foreground">{monitor.target_url}</p>
+              <p className="mt-1 text-[11px] text-muted-foreground">
+                Every {formatInterval(monitor.interval_sec)} · Success {describeSuccess(monitor.success_rules)}
+              </p>
             </div>
-            <StatusPill status={monitor.last_status} />
           </div>
-          <div className="grid gap-3 sm:grid-cols-3">
-            <Card><CardHeader><CardTitle className="text-xs text-muted-foreground uppercase">24h</CardTitle></CardHeader><CardContent className="font-mono text-2xl">{formatUptime(monitor.uptime_24h)}</CardContent></Card>
-            <Card><CardHeader><CardTitle className="text-xs text-muted-foreground uppercase">7d</CardTitle></CardHeader><CardContent className="font-mono text-2xl">{formatUptime(monitor.uptime_7d)}</CardContent></Card>
-            <Card><CardHeader><CardTitle className="text-xs text-muted-foreground uppercase">Interval</CardTitle></CardHeader><CardContent className="font-mono text-2xl">{formatInterval(monitor.interval_sec)}</CardContent></Card>
-          </div>
-          <Card>
-            <CardHeader><CardTitle>Locations</CardTitle></CardHeader>
-            <CardContent className="space-y-3">
-              {(monitor.latest_run?.results ?? []).map((result) => (
-                <div key={result.id} className="grid items-center gap-2 sm:grid-cols-[180px_1fr_auto]">
-                  <div className="text-sm">{locationLabel(result.city, result.country_code, result.node_name)}</div>
-                  {result.status === "pending" ? <LoadBar /> : <StatusPill status={result.status} />}
-                  <div className="font-mono text-xs text-muted-foreground">{result.status === "pending" ? "checking" : `${formatMs(result.total_ms)} · ${result.http_status ?? "—"}`}</div>
-                </div>
-              ))}
-            </CardContent>
-          </Card>
-          <Card><CardHeader><CardTitle>Latency</CardTitle></CardHeader><CardContent><LatencyChart points={monitor.points} /></CardContent></Card>
-          <Card><CardHeader><CardTitle>Uptime</CardTitle></CardHeader><CardContent><UptimeChart buckets={monitor.buckets} /></CardContent></Card>
+          <MonitorPanel monitor={monitor} run={monitor.latest_run} />
         </div>
       )}
     </main>

@@ -65,8 +65,8 @@ func LoadPack(dir string) Pack {
 		Version:      0,
 		HeartbeatSec: 15,
 		Heartbeat: []map[string]any{
-			{"op": "net.sample", "save": "net"},
 			{"op": "host.info", "save": "host"},
+			{"op": "net.speed", "save": "speed", "interval_sec": 300},
 		},
 	}
 	raw, err := os.ReadFile(filepath.Join(dir, "pack.json"))

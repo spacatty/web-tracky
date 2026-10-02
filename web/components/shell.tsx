@@ -1,6 +1,6 @@
 "use client";
 
-import { ActivityIcon, KeyRoundIcon, LayersIcon, LogOutIcon, MenuIcon, RadarIcon, UsersIcon } from "lucide-react";
+import { ActivityIcon, KeyRoundIcon, LayersIcon, LogOutIcon, MenuIcon, RadarIcon, SettingsIcon, UsersIcon } from "lucide-react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useState } from "react";
@@ -30,6 +30,7 @@ export function Shell({ user, children }: { user: Me; children: React.ReactNode 
           { href: "/users", label: "Users", icon: UsersIcon },
         ]
       : []),
+    { href: "/settings", label: "Settings", icon: SettingsIcon },
   ];
 
   async function logout() {
@@ -63,7 +64,7 @@ export function Shell({ user, children }: { user: Me; children: React.ReactNode 
 
   return (
     <div className="min-h-screen md:grid md:grid-cols-[220px_1fr]">
-      <aside className="hidden border-r bg-card/70 md:flex md:flex-col md:px-3 md:py-4">
+      <aside className="hidden border-r bg-sidebar md:flex md:flex-col md:px-3 md:py-4">
         <Link href="/" className="mb-6 flex items-center gap-2 px-2">
           <span className="grid size-7 place-items-center rounded-lg bg-primary text-xs font-semibold text-primary-foreground">T</span>
           <span className="font-semibold tracking-tight">Tracky</span>
@@ -78,7 +79,7 @@ export function Shell({ user, children }: { user: Me; children: React.ReactNode 
         </div>
       </aside>
       <div className="min-w-0">
-        <header className="flex items-center gap-3 border-b px-4 py-3 md:hidden">
+        <header className="flex items-center gap-3 border-b bg-sidebar px-4 py-3 md:hidden">
           <Sheet open={open} onOpenChange={setOpen}>
             <SheetTrigger render={<Button variant="outline" size="icon-sm" aria-label="Menu" />}>
               <MenuIcon />

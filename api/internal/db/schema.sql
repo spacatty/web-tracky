@@ -53,6 +53,10 @@ CREATE TABLE nodes (
     link_speed_bps bigint NOT NULL DEFAULT 0,
     rx_bps double precision NOT NULL DEFAULT 0,
     tx_bps double precision NOT NULL DEFAULT 0,
+    down_bps double precision NOT NULL DEFAULT 0,
+    up_bps double precision NOT NULL DEFAULT 0,
+    speed_at timestamptz,
+    metrics_refresh boolean NOT NULL DEFAULT false,
     api_rtt_ms double precision,
     hostname text NOT NULL DEFAULT '',
     os text NOT NULL DEFAULT '',
@@ -97,6 +101,7 @@ CREATE TABLE monitors (
     public_slug text UNIQUE,
     country_codes text[] NOT NULL DEFAULT '{}',
     max_nodes integer NOT NULL DEFAULT 20,
+    success_rules jsonb NOT NULL DEFAULT '[]'::jsonb,
     next_run_at timestamptz NOT NULL DEFAULT now(),
     created_at timestamptz NOT NULL DEFAULT now()
 );
@@ -153,7 +158,9 @@ CREATE TABLE node_metrics (
     rx_bps double precision NOT NULL DEFAULT 0,
     tx_bps double precision NOT NULL DEFAULT 0,
     link_speed_bps bigint NOT NULL DEFAULT 0,
-    api_rtt_ms double precision
+    api_rtt_ms double precision,
+    down_bps double precision,
+    up_bps double precision
 );
 
 CREATE TABLE instruction_packs (

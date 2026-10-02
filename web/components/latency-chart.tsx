@@ -1,5 +1,6 @@
 "use client";
 
+import { cn } from "cn";
 import { CartesianGrid, Line, LineChart, XAxis, YAxis, Bar, BarChart } from "recharts";
 
 import { ChartContainer, ChartTooltip, ChartTooltipContent, type ChartConfig } from "@/components/ui/chart";
@@ -7,7 +8,7 @@ import type { LatencyPoint, UptimeBucket } from "@/lib/types";
 
 const palette = ["var(--chart-1)", "var(--chart-2)", "var(--chart-3)", "var(--chart-4)", "var(--chart-5)"];
 
-export function LatencyChart({ points }: { points: LatencyPoint[] }) {
+export function LatencyChart({ points, className }: { points: LatencyPoint[]; className?: string }) {
   const series = new Map<string, string>();
   const rows = new Map<string, Record<string, string | number>>();
   for (const point of points) {
@@ -28,7 +29,7 @@ export function LatencyChart({ points }: { points: LatencyPoint[] }) {
     return <p className="text-sm text-muted-foreground">Latency appears after the first completed check.</p>;
   }
   return (
-    <ChartContainer config={config} className="aspect-auto h-64 w-full">
+    <ChartContainer config={config} className={cn("aspect-auto h-80 w-full", className)}>
       <LineChart data={data} margin={{ left: 4, right: 8, top: 8 }}>
         <CartesianGrid vertical={false} />
         <XAxis
@@ -50,13 +51,13 @@ export function LatencyChart({ points }: { points: LatencyPoint[] }) {
   );
 }
 
-export function UptimeChart({ buckets }: { buckets: UptimeBucket[] }) {
+export function UptimeChart({ buckets, className }: { buckets: UptimeBucket[]; className?: string }) {
   const config = { ok_ratio: { label: "Uptime", color: "var(--chart-1)" } } satisfies ChartConfig;
   if (buckets.length === 0) {
     return <p className="text-sm text-muted-foreground">Hourly uptime fills in as checks complete.</p>;
   }
   return (
-    <ChartContainer config={config} className="aspect-auto h-28 w-full">
+    <ChartContainer config={config} className={cn("aspect-auto h-14 w-full", className)}>
       <BarChart data={buckets}>
         <XAxis dataKey="t" hide />
         <ChartTooltip
