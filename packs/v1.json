@@ -1,10 +1,11 @@
 {
-  "version": 2,
+  "version": 3,
   "core_min": "0.2.0",
   "heartbeat_sec": 15,
   "job_timeout_sec": 60,
   "heartbeat": [
     {"op": "host.info", "save": "host"},
+    {"op": "net.sample", "save": "net"},
     {"op": "net.speed", "save": "speed", "interval_sec": 300, "down_bytes": 8000000, "up_bytes": 4000000, "timeout_ms": 6000}
   ],
   "check": [

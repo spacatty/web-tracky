@@ -58,6 +58,13 @@ export type FleetNode = {
   os: string;
   arch: string;
   kernel: string;
+  last_sample?: Record<string, unknown>;
+  update_status: string;
+  update_target: string;
+  update_error: string;
+  update_progress: number;
+  update_at: string | null;
+  core_latest: string;
   groups: GroupRef[];
   created_at: string;
 };
@@ -66,6 +73,8 @@ export type MetricPoint = {
   t: string;
   down_bps: number;
   up_bps: number;
+  rx_bps: number;
+  tx_bps: number;
   api_rtt_ms: number | null;
 };
 
@@ -160,12 +169,35 @@ export type MonitorDetail = Monitor & {
   buckets: UptimeBucket[];
 };
 
+export type AgentVersionCount = {
+  version: string;
+  count: number;
+  online: number;
+};
+
+export type UpdatingAgent = {
+  id: string;
+  name: string;
+  core_version: string;
+  update_status: string;
+  update_target: string;
+  update_progress: number;
+  update_error: string;
+};
+
 export type Overview = {
   nodes_online: number;
   nodes_total: number;
   monitors_total: number;
   monitors_failing: number;
   monitors_ok: number;
+  agent_latest: string;
+  agent_versions: AgentVersionCount[];
+  agents_on_latest: number;
+  agents_behind: number;
+  agents_updating: number;
+  agents_failed: number;
+  updating_agents: UpdatingAgent[];
   recent_failures: {
     finished_at: string | null;
     monitor_id: string;

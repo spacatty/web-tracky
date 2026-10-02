@@ -84,7 +84,7 @@ export default function EnrollPage() {
             <div className="space-y-2">
               <Label>Groups</Label>
               {(groups.data ?? []).map((group) => (
-                <label key={group.id} className="flex items-center gap-2 text-sm">
+                <Label key={group.id} className="font-normal">
                   <Checkbox
                     checked={groupIDs.includes(group.id)}
                     onCheckedChange={(checked) =>
@@ -92,7 +92,7 @@ export default function EnrollPage() {
                     }
                   />
                   {group.name}
-                </label>
+                </Label>
               ))}
             </div>
             <Button type="submit" disabled={create.isPending}>Create token</Button>

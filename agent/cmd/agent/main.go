@@ -90,9 +90,14 @@ func (a *app) loop() {
 			go a.runJob(job)
 		}
 		if len(resp.Jobs) == 0 && resp.Core.URL != "" && resp.Core.SHA256 != "" && resp.Core.Version != "" && resp.Core.Version != version {
-			log.Printf("updating core %s -> %s", version, resp.Core.Version)
-			if err := update.Apply(resp.Core.URL, resp.Core.SHA256); err != nil {
+			target := resp.Core.Version
+			log.Printf("updating core %s -> %s", version, target)
+			err := update.Apply(resp.Core.URL, resp.Core.SHA256, func(phase string, progress int) {
+				a.reportUpdate(phase, target, "", progress)
+			})
+			if err != nil {
 				log.Printf("core update failed: %v", err)
+				a.reportUpdate("failed", target, err.Error(), 0)
 			}
 		}
 		time.Sleep(time.Second)
@@ -197,6 +202,36 @@ func (a *app) heartbeat(ctx context.Context) (heartbeatResponse, time.Duration, 
 		net = 0
 	}
 	return resp, net, nil
+}
+
+func (a *app) reportUpdate(status, target, errText string, progress int) {
+	body, err := json.Marshal(map[string]any{
+		"status":   status,
+		"target":   target,
+		"error":    errText,
+		"progress": progress,
+	})
+	if err != nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(a.cfg.Endpoint, "/")+"/agent/v1/update", bytes.NewReader(body))
+	if err != nil {
+		return
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+a.cfg.NodeSecret)
+	res, err := a.client.Do(req)
+	if err != nil {
+		log.Printf("update status: %v", err)
+		return
+	}
+	defer res.Body.Close()
+	_, _ = io.Copy(io.Discard, io.LimitReader(res.Body, 4096))
+	if res.StatusCode >= 300 {
+		log.Printf("update status: http %d", res.StatusCode)
+	}
 }
 
 func withForcedSpeed(steps []map[string]any) []map[string]any {

@@ -4,25 +4,27 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { ColumnDef } from "@tanstack/react-table";
 import { RefreshCwIcon } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Area, AreaChart } from "recharts";
+import { Area, AreaChart, CartesianGrid, XAxis } from "recharts";
 import { toast } from "sonner";
 
 import { DataTable } from "@/components/data-table";
 import { LocationLabel } from "@/components/location";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { ChartContainer, type ChartConfig } from "@/components/ui/chart";
+import { ChartContainer, ChartTooltip, ChartTooltipContent, type ChartConfig } from "@/components/ui/chart";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { ApiError, api } from "@/lib/api";
-import { formatAgo, formatLink, formatMs, formatSpeed, locationLabel } from "@/lib/format";
+import { formatAgo, formatLink, formatMs, formatRate, formatSpeed, locationLabel } from "@/lib/format";
 import type { FleetNode, Group, MetricPoint, Me } from "@/lib/types";
 
 const chartConfig = {
-  down_bps: { label: "Download", color: "var(--chart-1)" },
-  up_bps: { label: "Upload", color: "var(--chart-2)" },
+  rx_bps: { label: "Receive", color: "var(--chart-1)" },
+  tx_bps: { label: "Transmit", color: "var(--chart-2)" },
+  down_bps: { label: "Download test", color: "var(--chart-3)" },
+  up_bps: { label: "Upload test", color: "var(--chart-4)" },
 } satisfies ChartConfig;
 
 type PendingRefresh = { speedAt: string | null; token: number };
@@ -102,44 +104,18 @@ export default function NodesPage() {
         accessorFn: (row) => [row.name, row.hostname, row.ip].filter(Boolean).join(" "),
         header: "Node",
         cell: ({ row }) => (
-          <div>
-            <div className="flex items-center gap-2">
-              <span
-                className={`size-2 shrink-0 rounded-full ${row.original.online ? "bg-emerald-500" : "bg-red-500"}`}
-                title={row.original.online ? "Online" : "Offline"}
-              />
-              <span className="font-medium">{row.original.name}</span>
+          <div className="flex items-center gap-2">
+            <span
+              className={`size-2 shrink-0 rounded-full ${updateBusy(row.original) ? "bg-amber-400" : row.original.online ? "bg-emerald-500" : "bg-red-500"}`}
+              title={updateBusy(row.original) ? "Updating" : row.original.online ? "Online" : "Offline"}
+            />
+            <div className="min-w-0">
+              <div className="font-medium">{row.original.name}</div>
+              <div className="text-xs text-muted-foreground">{row.original.hostname || row.original.os || "—"}</div>
+              {row.original.ip ? <CopyIP ip={row.original.ip} /> : null}
             </div>
-            <div className="pl-4 text-xs text-muted-foreground">{row.original.hostname || row.original.os || "—"}</div>
-            {row.original.ip ? <div className="pl-4"><CopyIP ip={row.original.ip} /></div> : null}
           </div>
         ),
-      },
-      {
-        id: "location",
-        header: "Location",
-        accessorFn: (row) => locationLabel(row.city, row.country_code, row.country),
-        cell: ({ row }) => (
-          <LocationLabel city={row.original.city} code={row.original.country_code} name={row.original.country} />
-        ),
-      },
-      {
-        id: "groups",
-        header: "Groups",
-        accessorFn: (row) => row.groups.map((group) => group.name).join(" "),
-        cell: ({ row }) => (
-          <div className="flex flex-wrap gap-1">
-            {row.original.groups.map((group) => (
-              <Badge key={group.id} variant="secondary">{group.name}</Badge>
-            ))}
-          </div>
-        ),
-      },
-      {
-        id: "ping",
-        header: "API RTT",
-        accessorFn: (row) => row.api_rtt_ms ?? -1,
-        cell: ({ row }) => <span className="font-mono text-xs">{formatMs(row.original.api_rtt_ms)}</span>,
       },
       {
         id: "speed",
@@ -165,10 +141,47 @@ export default function NodesPage() {
         ),
       },
       {
+        id: "location",
+        header: "Location",
+        accessorFn: (row) => locationLabel(row.city, row.country_code, row.country),
+        cell: ({ row }) => (
+          <LocationLabel city={row.original.city} code={row.original.country_code} name={row.original.country} />
+        ),
+      },
+      {
+        id: "groups",
+        header: "Groups",
+        accessorFn: (row) => row.groups.map((group) => group.name).join(" "),
+        cell: ({ row }) => (
+          <div className="flex flex-wrap gap-1">
+            {row.original.groups.map((group) => (
+              <Badge key={group.id} variant="secondary">{group.name}</Badge>
+            ))}
+          </div>
+        ),
+      },
+      {
         id: "seen",
         header: "Seen",
         accessorFn: (row) => row.last_seen_at ?? "",
         cell: ({ row }) => <span className="text-xs text-muted-foreground">{formatAgo(row.original.last_seen_at)}</span>,
+      },
+      {
+        id: "ping",
+        header: "RTT",
+        accessorFn: (row) => row.api_rtt_ms ?? -1,
+        cell: ({ row }) => <span className="font-mono text-xs">{formatMs(row.original.api_rtt_ms)}</span>,
+      },
+      {
+        id: "core",
+        header: "Core",
+        accessorFn: (row) => row.core_version,
+        cell: ({ row }) => (
+          <div className="space-y-1">
+            <div className="font-mono text-xs">{row.original.core_version || "—"}</div>
+            <UpdateMark node={row.original} />
+          </div>
+        ),
       },
       ...(admin
         ? [
@@ -292,39 +305,68 @@ function NodeSheet({
 
   return (
     <Sheet open={Boolean(node)} onOpenChange={(open) => !open && onClose()}>
-      <SheetContent className="w-full overflow-y-auto sm:max-w-md">
+      <SheetContent className="w-full overflow-y-auto data-[side=right]:sm:max-w-lg">
         {node ? (
           <>
             <SheetHeader>
               <SheetTitle>{node.name}</SheetTitle>
               <SheetDescription>
                 <LocationLabel city={node.city} code={node.country_code} name={node.country} className="block" />
-                <span className="mt-1 block font-mono">{node.hostname || node.os || "—"}</span>
+                <span className="mt-1 block font-mono">{node.hostname || "—"}</span>
               </SheetDescription>
             </SheetHeader>
             <div className="space-y-4 px-4 pb-6">
               {node.ip ? <CopyIP ip={node.ip} /> : null}
+              <UpdatePanel node={node} />
               <div className="grid grid-cols-2 gap-2 text-xs">
-                <Meta label="API RTT" value={formatMs(node.api_rtt_ms)} />
-                <Meta label="Link" value={formatLink(node.link_speed_bps)} />
+                <Meta label="Link" value={node.adapter ? `${node.adapter} · ${formatLink(node.link_speed_bps)}` : formatLink(node.link_speed_bps)} />
+                <Meta label="Throughput" value={`↓ ${formatRate(node.rx_bps)}  ↑ ${formatRate(node.tx_bps)}`} />
                 <Meta label="Download" value={formatSpeed(node.down_bps)} />
                 <Meta label="Upload" value={formatSpeed(node.up_bps)} />
-                <Meta label="Tested" value={refreshing ? "Measuring…" : node.speed_at ? formatAgo(node.speed_at) : "—"} />
-                <Meta label="Adapter" value={node.adapter || "—"} />
+                <Meta label="API RTT" value={formatMs(node.api_rtt_ms)} />
+                <Meta label="Speed test" value={refreshing ? "Measuring…" : node.speed_at ? formatAgo(node.speed_at) : "—"} />
                 <Meta label="OS" value={[node.os, node.arch].filter(Boolean).join(" ") || "—"} />
+                <Meta label="Kernel" value={node.kernel || "—"} />
+                <Meta label="Core" value={node.core_version || "—"} />
+                <Meta label="Pack" value={node.pack_version ? String(node.pack_version) : "—"} />
+                <Meta label="Last seen" value={formatAgo(node.last_seen_at)} />
+                <Meta label="Enrolled" value={formatAgo(node.created_at)} />
               </div>
+              <SampleFacts sample={node.last_sample} />
               {admin ? (
                 <Button type="button" variant="outline" size="sm" disabled={refreshing} onClick={onRefresh}>
                   <RefreshCwIcon className={refreshing ? "animate-spin" : ""} />
                   {refreshing ? "Measuring" : "Refresh metrics"}
                 </Button>
               ) : null}
-              <ChartContainer config={chartConfig} className="aspect-auto h-24 w-full">
-                <AreaChart data={metrics.data ?? []}>
-                  <Area dataKey="down_bps" stroke="var(--color-down_bps)" fill="var(--color-down_bps)" fillOpacity={0.2} />
-                  <Area dataKey="up_bps" stroke="var(--color-up_bps)" fill="var(--color-up_bps)" fillOpacity={0.15} />
-                </AreaChart>
-              </ChartContainer>
+              <div className="space-y-1">
+                <p className="text-xs text-muted-foreground">Last 6 hours</p>
+                <ChartContainer config={chartConfig} className="aspect-auto h-36 w-full">
+                  <AreaChart data={metrics.data ?? []} margin={{ left: 4, right: 8, top: 8 }}>
+                    <CartesianGrid vertical={false} />
+                    <XAxis
+                      dataKey="t"
+                      tickLine={false}
+                      axisLine={false}
+                      minTickGap={28}
+                      tickFormatter={(value) => new Date(String(value)).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+                    />
+                    <ChartTooltip
+                      content={
+                        <ChartTooltipContent
+                          labelFormatter={(_, payload) => {
+                            const row = payload?.[0]?.payload as MetricPoint | undefined;
+                            return row ? new Date(row.t).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "";
+                          }}
+                          formatter={(value, name) => [name === "rx_bps" || name === "tx_bps" ? formatRate(Number(value)) : formatSpeed(Number(value)), chartConfig[name as keyof typeof chartConfig]?.label ?? name]}
+                        />
+                      }
+                    />
+                    <Area dataKey="rx_bps" stroke="var(--color-rx_bps)" fill="var(--color-rx_bps)" fillOpacity={0.2} />
+                    <Area dataKey="tx_bps" stroke="var(--color-tx_bps)" fill="var(--color-tx_bps)" fillOpacity={0.15} />
+                  </AreaChart>
+                </ChartContainer>
+              </div>
               {admin ? (
                 <form
                   className="space-y-3"
@@ -342,7 +384,7 @@ function NodeSheet({
                   <div className="space-y-2">
                     <Label>Groups</Label>
                     {groups.map((group) => (
-                      <label key={group.id} className="flex items-center gap-2 text-sm">
+                      <Label key={group.id} className="font-normal">
                         <Checkbox
                           checked={groupIDs.includes(group.id)}
                           onCheckedChange={(checked) =>
@@ -353,7 +395,7 @@ function NodeSheet({
                         />
                         {group.name}
                         <span className="text-xs text-muted-foreground">{group.visibility}</span>
-                      </label>
+                      </Label>
                     ))}
                   </div>
                   <Button type="submit" disabled={save.isPending}>Save</Button>
@@ -367,12 +409,95 @@ function NodeSheet({
   );
 }
 
+const updatePhases = ["downloading", "verifying", "installing", "restarting"] as const;
+
+function updateBusy(node: FleetNode) {
+  return updatePhases.includes(node.update_status as (typeof updatePhases)[number]);
+}
+
+function updateLabel(status: string) {
+  switch (status) {
+    case "downloading":
+      return "Downloading";
+    case "verifying":
+      return "Verifying";
+    case "installing":
+      return "Installing";
+    case "restarting":
+      return "Restarting";
+    case "failed":
+      return "Failed";
+    case "stalled":
+      return "Stalled";
+    default:
+      return status;
+  }
+}
+
+function UpdateMark({ node }: { node: FleetNode }) {
+  if (updateBusy(node) || node.update_status === "stalled") {
+    return <span className="text-[11px] text-amber-500">{updateLabel(node.update_status)}{node.update_status === "downloading" ? ` ${node.update_progress}%` : ""}</span>;
+  }
+  if (node.update_status === "failed") {
+    return <span className="text-[11px] text-destructive" title={node.update_error}>Failed</span>;
+  }
+  if (node.core_latest && node.core_version && node.core_version !== node.core_latest) {
+    return <span className="text-[11px] text-muted-foreground">Behind {node.core_latest}</span>;
+  }
+  return null;
+}
+
+function UpdatePanel({ node }: { node: FleetNode }) {
+  const active = updatePhases.indexOf(node.update_status as (typeof updatePhases)[number]);
+  const behind = Boolean(node.core_latest && node.core_version && node.core_version !== node.core_latest);
+  const showSteps = active >= 0 || node.update_status === "failed" || node.update_status === "stalled";
+  if (!showSteps && !behind && !node.core_latest) return null;
+  return (
+    <div className="space-y-2 rounded-lg border px-3 py-2 text-xs">
+      <div className="flex items-center justify-between gap-2">
+        <span className="text-muted-foreground">Agent core</span>
+        <span className="font-mono">
+          {node.core_version || "—"}
+          {node.core_latest ? ` / ${node.core_latest}` : ""}
+        </span>
+      </div>
+      {showSteps ? (
+        <ol className="space-y-1">
+          {updatePhases.map((phase, index) => {
+            const done = active > index;
+            const current = node.update_status === phase;
+            return (
+              <li key={phase} className={current ? "text-foreground" : done ? "text-muted-foreground" : "text-muted-foreground/60"}>
+                {done ? "✓ " : current ? "→ " : "· "}
+                {updateLabel(phase)}
+                {current && phase === "downloading" ? ` ${node.update_progress}%` : ""}
+              </li>
+            );
+          })}
+        </ol>
+      ) : null}
+      {node.update_status === "downloading" ? (
+        <span className="block h-1 overflow-hidden rounded-full bg-muted">
+          <span className="block h-full rounded-full bg-primary" style={{ width: `${node.update_progress}%` }} />
+        </span>
+      ) : null}
+      {node.update_status === "failed" ? <p className="text-destructive">{node.update_error || "Update failed"}</p> : null}
+      {node.update_status === "stalled" ? <p className="text-amber-500">The update stopped reporting. It will retry on the next heartbeat.</p> : null}
+      {!showSteps && behind ? (
+        <p className="text-muted-foreground">Idle machines replace their own binary. This one updates the next time it has no checks in flight.</p>
+      ) : null}
+      {!showSteps && !behind && node.core_latest ? <p className="text-muted-foreground">Running the published release.</p> : null}
+    </div>
+  );
+}
+
 function CopyIP({ ip }: { ip: string }) {
   return (
-    <button
+    <Button
       type="button"
+      variant="ghost"
       title="Copy IP"
-      className="block max-w-full cursor-copy truncate text-left font-mono text-[11px] text-muted-foreground hover:text-foreground"
+      className="h-auto max-w-full cursor-copy justify-start truncate px-1 font-mono text-[11px] font-normal text-muted-foreground hover:bg-transparent hover:text-foreground"
       onClick={(event) => {
         event.stopPropagation();
         void navigator.clipboard.writeText(ip).then(
@@ -382,15 +507,75 @@ function CopyIP({ ip }: { ip: string }) {
       }}
     >
       {ip}
-    </button>
+    </Button>
   );
+}
+
+const shownSample = new Set([
+  "host.hostname",
+  "host.os",
+  "host.arch",
+  "host.kernel",
+  "net.adapter",
+  "net.rx_bps",
+  "net.tx_bps",
+  "net.link_speed_bps",
+  "speed.ok",
+  "speed.down_bps",
+  "speed.up_bps",
+  "speed.measured_at",
+]);
+
+function SampleFacts({ sample }: { sample?: Record<string, unknown> }) {
+  const rows = flattenSample(sample).filter((row) => !shownSample.has(row.path) && row.value !== "");
+  if (rows.length === 0) return null;
+  return (
+    <div className="space-y-2">
+      <p className="text-xs text-muted-foreground">Collected</p>
+      <div className="grid grid-cols-2 gap-2 text-xs">
+        {rows.map((row) => (
+          <Meta key={row.path} label={row.label} value={row.value} />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function flattenSample(sample: Record<string, unknown> | undefined, prefix = ""): { path: string; label: string; value: string }[] {
+  if (!sample) return [];
+  const rows: { path: string; label: string; value: string }[] = [];
+  for (const [key, value] of Object.entries(sample)) {
+    const path = prefix ? `${prefix}.${key}` : key;
+    if (value && typeof value === "object" && !Array.isArray(value)) {
+      rows.push(...flattenSample(value as Record<string, unknown>, path));
+      continue;
+    }
+    rows.push({ path, label: labelFor(path), value: formatFact(path, value) });
+  }
+  return rows;
+}
+
+function labelFor(path: string) {
+  const name = path.split(".").pop() ?? path;
+  return name.replaceAll("_", " ");
+}
+
+function formatFact(path: string, value: unknown) {
+  if (value == null || value === "") return "";
+  if (typeof value === "boolean") return value ? "yes" : "no";
+  if (typeof value === "number") {
+    if (path.endsWith("_bps")) return formatSpeed(value) === "—" ? formatRate(value) : formatSpeed(value);
+    if (path.endsWith("_ms")) return formatMs(value);
+    return String(value);
+  }
+  return String(value);
 }
 
 function Meta({ label, value }: { label: string; value: string }) {
   return (
-    <div className="rounded-lg border px-2.5 py-2">
-      <div className="text-muted-foreground">{label}</div>
-      <div className="font-mono">{value}</div>
+    <div className="min-w-0 rounded-lg border px-2.5 py-2">
+      <div className="text-muted-foreground capitalize">{label}</div>
+      <div className="font-mono break-all">{value}</div>
     </div>
   );
 }

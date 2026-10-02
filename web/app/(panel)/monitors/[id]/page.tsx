@@ -103,9 +103,10 @@ export default function MonitorDetailPage() {
             Every {formatInterval(monitor.interval_sec)} · up to {monitor.max_nodes} nodes
             {monitor.country_codes.length ? ` · ${monitor.country_codes.join(", ")}` : ""}
             {" · "}
-            <button
+            <Button
               type="button"
-              className="hover:text-foreground"
+              variant="link"
+              className="h-auto px-0 text-[11px] font-normal text-muted-foreground"
               onClick={() => {
                 const next = toDraft(monitor.success_rules);
                 setCustomSuccess(next.enabled);
@@ -114,7 +115,7 @@ export default function MonitorDetailPage() {
               }}
             >
               Success {describeSuccess(monitor.success_rules)}
-            </button>
+            </Button>
           </p>
         </div>
         <div className="flex gap-2">

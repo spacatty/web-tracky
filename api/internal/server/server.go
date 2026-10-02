@@ -151,6 +151,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /install.sh", s.installScript)
 	mux.HandleFunc("POST /agent/v1/enroll", s.enroll)
 	mux.HandleFunc("POST /agent/v1/heartbeat", s.heartbeat)
+	mux.HandleFunc("POST /agent/v1/update", s.agentUpdate)
 	mux.HandleFunc("POST /agent/v1/results", s.postResult)
 	mux.HandleFunc("GET /agent/v1/manifest", s.manifestHTTP)
 	mux.HandleFunc("GET /agent/v1/download/{goos}/{goarch}", s.downloadCurrent)

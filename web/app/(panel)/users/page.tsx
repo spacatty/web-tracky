@@ -104,7 +104,7 @@ function CreateUser({ open, onOpenChange, onCreated }: { open: boolean; onOpenCh
           <div className="space-y-2">
             <Label>Private groups</Label>
             {(groups.data ?? []).filter((group) => group.visibility === "private").map((group) => (
-              <label key={group.id} className="flex items-center gap-2 text-sm">
+              <Label key={group.id} className="font-normal">
                 <Checkbox
                   checked={groupIDs.includes(group.id)}
                   onCheckedChange={(checked) =>
@@ -112,7 +112,7 @@ function CreateUser({ open, onOpenChange, onCreated }: { open: boolean; onOpenCh
                   }
                 />
                 {group.name}
-              </label>
+              </Label>
             ))}
           </div>
           <DialogFooter><Button type="submit" disabled={save.isPending}>Create</Button></DialogFooter>
@@ -185,7 +185,7 @@ function EditUser({ user, onClose, onSaved }: { user: UserRow | null; onClose: (
             <div className="space-y-2">
               <Label>Groups</Label>
               {(groups.data ?? []).map((group) => (
-                <label key={group.id} className="flex items-center gap-2 text-sm">
+                <Label key={group.id} className="font-normal">
                   <Checkbox
                     checked={groupIDs.includes(group.id)}
                     onCheckedChange={(checked) =>
@@ -194,7 +194,7 @@ function EditUser({ user, onClose, onSaved }: { user: UserRow | null; onClose: (
                   />
                   {group.name}
                   <span className="text-xs text-muted-foreground">{group.visibility}</span>
-                </label>
+                </Label>
               ))}
             </div>
             <DialogFooter><Button type="submit" disabled={save.isPending}>Save</Button></DialogFooter>

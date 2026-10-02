@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -109,11 +110,52 @@ func randomSlug() (string, error) {
 }
 
 func clientIP(r *http.Request) string {
-	host := r.RemoteAddr
-	if h, _, err := splitHostPortLoose(host); err == nil {
+	remote := hostOnly(r.RemoteAddr)
+	// Host nginx reaches the published port through Docker's bridge, so RemoteAddr
+	// is the gateway (172.20.0.1). Trust the proxy headers only from that private peer.
+	if trustForwarded(remote) {
+		if ip := headerIP(r.Header.Get("X-Real-IP")); ip != "" {
+			return ip
+		}
+		if ip := lastForwarded(r.Header.Get("X-Forwarded-For")); ip != "" {
+			return ip
+		}
+	}
+	return remote
+}
+
+func trustForwarded(ip string) bool {
+	parsed := net.ParseIP(ip)
+	return parsed != nil && (parsed.IsPrivate() || parsed.IsLoopback())
+}
+
+func headerIP(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if i := strings.IndexByte(raw, ','); i >= 0 {
+		raw = strings.TrimSpace(raw[:i])
+	}
+	ip := net.ParseIP(hostOnly(raw))
+	if ip == nil {
+		return ""
+	}
+	return ip.String()
+}
+
+func lastForwarded(raw string) string {
+	parts := strings.Split(raw, ",")
+	for i := len(parts) - 1; i >= 0; i-- {
+		if ip := headerIP(parts[i]); ip != "" {
+			return ip
+		}
+	}
+	return ""
+}
+
+func hostOnly(hostport string) string {
+	if h, _, err := splitHostPortLoose(hostport); err == nil {
 		return h
 	}
-	return host
+	return hostport
 }
 
 func splitHostPortLoose(hostport string) (string, string, error) {

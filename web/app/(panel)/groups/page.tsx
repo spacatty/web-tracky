@@ -198,7 +198,7 @@ function CheckList({
       <div className="max-h-40 space-y-1.5 overflow-auto rounded-lg border p-2">
         {items.length === 0 ? <p className="text-xs text-muted-foreground">None yet.</p> : null}
         {items.map((item) => (
-          <label key={item.id} className="flex items-center gap-2 text-sm">
+          <Label key={item.id} className="font-normal">
             <Checkbox
               checked={selected.includes(item.id)}
               onCheckedChange={(checked) =>
@@ -206,7 +206,7 @@ function CheckList({
               }
             />
             {item.label}
-          </label>
+          </Label>
         ))}
       </div>
     </div>

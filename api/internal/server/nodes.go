@@ -1,37 +1,45 @@
 package server
 
 import (
+	"encoding/json"
 	"net/http"
 	"time"
 )
 
 type nodeRow struct {
-	ID           string     `json:"id"`
-	Name         string     `json:"name"`
-	Online       bool       `json:"online"`
-	LastSeenAt   *time.Time `json:"last_seen_at"`
-	CoreVersion  string     `json:"core_version"`
-	PackVersion  int        `json:"pack_version"`
-	IP           string     `json:"ip,omitempty"`
-	Country      string     `json:"country"`
-	CountryCode  string     `json:"country_code"`
-	City         string     `json:"city"`
-	Latitude     *float64   `json:"latitude"`
-	Longitude    *float64   `json:"longitude"`
-	Adapter      string     `json:"adapter"`
-	LinkSpeedBps int64      `json:"link_speed_bps"`
-	RxBps        float64    `json:"rx_bps"`
-	TxBps        float64    `json:"tx_bps"`
-	DownBps      float64    `json:"down_bps"`
-	UpBps        float64    `json:"up_bps"`
-	SpeedAt      *time.Time `json:"speed_at"`
-	APIRTTMS     *float64   `json:"api_rtt_ms"`
-	Hostname     string     `json:"hostname"`
-	OS           string     `json:"os"`
-	Arch         string     `json:"arch"`
-	Kernel       string     `json:"kernel"`
-	Groups       []groupRef `json:"groups"`
-	CreatedAt    time.Time  `json:"created_at"`
+	ID             string          `json:"id"`
+	Name           string          `json:"name"`
+	Online         bool            `json:"online"`
+	LastSeenAt     *time.Time      `json:"last_seen_at"`
+	CoreVersion    string          `json:"core_version"`
+	PackVersion    int             `json:"pack_version"`
+	IP             string          `json:"ip,omitempty"`
+	Country        string          `json:"country"`
+	CountryCode    string          `json:"country_code"`
+	City           string          `json:"city"`
+	Latitude       *float64        `json:"latitude"`
+	Longitude      *float64        `json:"longitude"`
+	Adapter        string          `json:"adapter"`
+	LinkSpeedBps   int64           `json:"link_speed_bps"`
+	RxBps          float64         `json:"rx_bps"`
+	TxBps          float64         `json:"tx_bps"`
+	DownBps        float64         `json:"down_bps"`
+	UpBps          float64         `json:"up_bps"`
+	SpeedAt        *time.Time      `json:"speed_at"`
+	APIRTTMS       *float64        `json:"api_rtt_ms"`
+	Hostname       string          `json:"hostname"`
+	OS             string          `json:"os"`
+	Arch           string          `json:"arch"`
+	Kernel         string          `json:"kernel"`
+	LastSample     json.RawMessage `json:"last_sample"`
+	UpdateStatus   string          `json:"update_status"`
+	UpdateTarget   string          `json:"update_target"`
+	UpdateError    string          `json:"update_error"`
+	UpdateProgress int             `json:"update_progress"`
+	UpdateAt       *time.Time      `json:"update_at"`
+	CoreLatest     string          `json:"core_latest"`
+	Groups         []groupRef      `json:"groups"`
+	CreatedAt      time.Time       `json:"created_at"`
 }
 
 func (s *Server) listNodes(w http.ResponseWriter, r *http.Request) {
@@ -58,7 +66,7 @@ func (s *Server) listNodes(w http.ResponseWriter, r *http.Request) {
 			writeAPIError(w, err)
 			return
 		}
-		out = append(out, row)
+		out = append(out, s.finishNode(row))
 	}
 	if err := rows.Err(); err != nil {
 		writeAPIError(w, err)
@@ -88,7 +96,10 @@ func (s *Server) nodeMetrics(w http.ResponseWriter, r *http.Request) {
 		hours = 24
 	}
 	rows, err := s.pool.Query(r.Context(), `
-		SELECT date_trunc('minute', ts), COALESCE(avg(down_bps), 0), COALESCE(avg(up_bps), 0), avg(api_rtt_ms)
+		SELECT date_trunc('minute', ts),
+			COALESCE(avg(down_bps), 0), COALESCE(avg(up_bps), 0),
+			COALESCE(avg(rx_bps), 0), COALESCE(avg(tx_bps), 0),
+			avg(api_rtt_ms)
 		FROM node_metrics
 		WHERE node_id = $1::uuid AND ts > now() - make_interval(hours => $2)
 		GROUP BY 1
@@ -102,12 +113,14 @@ func (s *Server) nodeMetrics(w http.ResponseWriter, r *http.Request) {
 		T        time.Time `json:"t"`
 		DownBps  float64   `json:"down_bps"`
 		UpBps    float64   `json:"up_bps"`
+		RxBps    float64   `json:"rx_bps"`
+		TxBps    float64   `json:"tx_bps"`
 		APIRTTMS *float64  `json:"api_rtt_ms"`
 	}
 	out := []point{}
 	for rows.Next() {
 		var p point
-		if err := rows.Scan(&p.T, &p.DownBps, &p.UpBps, &p.APIRTTMS); err != nil {
+		if err := rows.Scan(&p.T, &p.DownBps, &p.UpBps, &p.RxBps, &p.TxBps, &p.APIRTTMS); err != nil {
 			writeAPIError(w, err)
 			return
 		}
@@ -324,7 +337,11 @@ func (s *Server) visibleNode(r *http.Request, id string, u User) (nodeRow, error
 		}
 		return nodeRow{}, errNotFound
 	}
-	return scanNode(rows)
+	row, err := scanNode(rows)
+	if err != nil {
+		return nodeRow{}, err
+	}
+	return s.finishNode(row), nil
 }
 
 const nodeSelectSQL = `
@@ -353,6 +370,12 @@ SELECT
 	n.os,
 	n.arch,
 	n.kernel,
+	n.last_sample,
+	n.update_status,
+	n.update_target,
+	n.update_error,
+	n.update_progress,
+	n.update_at,
 	n.created_at,
 	COALESCE((
 		SELECT json_agg(json_build_object('id', g.id::text, 'name', g.name, 'visibility', g.visibility) ORDER BY g.name)
@@ -377,13 +400,35 @@ func scanNode(row nodeScanner) (nodeRow, error) {
 		&n.ID, &n.Name, &n.Online, &n.LastSeenAt, &n.CoreVersion, &n.PackVersion, &n.IP,
 		&n.Country, &n.CountryCode, &n.City, &n.Latitude, &n.Longitude, &n.Adapter,
 		&n.LinkSpeedBps, &n.RxBps, &n.TxBps, &n.DownBps, &n.UpBps, &n.SpeedAt, &n.APIRTTMS, &n.Hostname, &n.OS, &n.Arch,
-		&n.Kernel, &n.CreatedAt, &raw,
+		&n.Kernel, &n.LastSample, &n.UpdateStatus, &n.UpdateTarget, &n.UpdateError, &n.UpdateProgress, &n.UpdateAt, &n.CreatedAt, &raw,
 	)
 	if err != nil {
 		return n, err
 	}
+	if len(n.LastSample) == 0 {
+		n.LastSample = json.RawMessage(`{}`)
+	}
 	n.Groups, err = unmarshalGroups(raw)
 	return n, err
+}
+
+func (s *Server) finishNode(n nodeRow) nodeRow {
+	if manifest, err := s.loadManifest(); err == nil {
+		n.CoreLatest = manifest.Version
+	}
+	if updateInProgress(n.UpdateStatus) && n.UpdateAt != nil && time.Since(*n.UpdateAt) > 3*time.Minute {
+		n.UpdateStatus = "stalled"
+	}
+	return n
+}
+
+func updateInProgress(status string) bool {
+	switch status {
+	case "downloading", "verifying", "installing", "restarting":
+		return true
+	default:
+		return false
+	}
 }
 
 func (s *Server) overview(w http.ResponseWriter, r *http.Request) {
@@ -468,6 +513,117 @@ func (s *Server) overview(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, err)
 		return
 	}
+	versionRows, err := s.pool.Query(r.Context(), `
+		SELECT COALESCE(NULLIF(n.core_version, ''), 'unknown'),
+			count(*),
+			count(*) FILTER (WHERE n.last_seen_at IS NOT NULL AND n.last_seen_at > now() - make_interval(secs => $3))
+		FROM nodes n
+		WHERE $2::bool OR EXISTS (
+			SELECT 1 FROM node_groups ng
+			JOIN groups g ON g.id = ng.group_id
+			WHERE ng.node_id = n.id
+			  AND (g.visibility = 'public' OR EXISTS (
+				SELECT 1 FROM group_users gu WHERE gu.group_id = g.id AND gu.user_id = $1::uuid
+			  ))
+		)
+		GROUP BY 1
+		ORDER BY 2 DESC, 1`, u.ID, u.Admin(), offline)
+	if err != nil {
+		writeAPIError(w, err)
+		return
+	}
+	defer versionRows.Close()
+	type versionCount struct {
+		Version string `json:"version"`
+		Count   int    `json:"count"`
+		Online  int    `json:"online"`
+	}
+	versions := []versionCount{}
+	for versionRows.Next() {
+		var row versionCount
+		if err := versionRows.Scan(&row.Version, &row.Count, &row.Online); err != nil {
+			writeAPIError(w, err)
+			return
+		}
+		versions = append(versions, row)
+	}
+	if err := versionRows.Err(); err != nil {
+		writeAPIError(w, err)
+		return
+	}
+	var updating, failed int
+	err = s.pool.QueryRow(r.Context(), `
+		SELECT
+			count(*) FILTER (WHERE n.update_status IN ('downloading', 'verifying', 'installing', 'restarting') AND n.update_at > now() - interval '3 minutes'),
+			count(*) FILTER (WHERE n.update_status = 'failed')
+		FROM nodes n
+		WHERE $2::bool OR EXISTS (
+			SELECT 1 FROM node_groups ng
+			JOIN groups g ON g.id = ng.group_id
+			WHERE ng.node_id = n.id
+			  AND (g.visibility = 'public' OR EXISTS (
+				SELECT 1 FROM group_users gu WHERE gu.group_id = g.id AND gu.user_id = $1::uuid
+			  ))
+		)`, u.ID, u.Admin()).Scan(&updating, &failed)
+	if err != nil {
+		writeAPIError(w, err)
+		return
+	}
+	updateRows, err := s.pool.Query(r.Context(), `
+		SELECT n.id::text, n.name, n.core_version, n.update_status, n.update_target, n.update_progress, n.update_error
+		FROM nodes n
+		WHERE n.update_status <> ''
+		  AND (n.update_status = 'failed' OR n.update_at > now() - interval '3 minutes')
+		  AND ($2::bool OR EXISTS (
+			SELECT 1 FROM node_groups ng
+			JOIN groups g ON g.id = ng.group_id
+			WHERE ng.node_id = n.id
+			  AND (g.visibility = 'public' OR EXISTS (
+				SELECT 1 FROM group_users gu WHERE gu.group_id = g.id AND gu.user_id = $1::uuid
+			  ))
+		  ))
+		ORDER BY n.update_at DESC NULLS LAST
+		LIMIT 12`, u.ID, u.Admin())
+	if err != nil {
+		writeAPIError(w, err)
+		return
+	}
+	defer updateRows.Close()
+	type updatingNode struct {
+		ID       string `json:"id"`
+		Name     string `json:"name"`
+		Core     string `json:"core_version"`
+		Status   string `json:"update_status"`
+		Target   string `json:"update_target"`
+		Progress int    `json:"update_progress"`
+		Error    string `json:"update_error"`
+	}
+	updatingNodes := []updatingNode{}
+	for updateRows.Next() {
+		var row updatingNode
+		if err := updateRows.Scan(&row.ID, &row.Name, &row.Core, &row.Status, &row.Target, &row.Progress, &row.Error); err != nil {
+			writeAPIError(w, err)
+			return
+		}
+		updatingNodes = append(updatingNodes, row)
+	}
+	if err := updateRows.Err(); err != nil {
+		writeAPIError(w, err)
+		return
+	}
+	latest := ""
+	if manifest, err := s.loadManifest(); err == nil {
+		latest = manifest.Version
+	}
+	onLatest := 0
+	behind := 0
+	for _, row := range versions {
+		if latest != "" && row.Version == latest {
+			onLatest = row.Count
+		} else if latest != "" {
+			behind += row.Count
+		}
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"nodes_online":     nodesOnline,
 		"nodes_total":      nodesTotal,
@@ -475,5 +631,12 @@ func (s *Server) overview(w http.ResponseWriter, r *http.Request) {
 		"monitors_failing": monitorsFailing,
 		"monitors_ok":      monitorsOK,
 		"recent_failures":  failures,
+		"agent_latest":     latest,
+		"agent_versions":   versions,
+		"agents_on_latest": onLatest,
+		"agents_behind":    behind,
+		"agents_updating":  updating,
+		"agents_failed":    failed,
+		"updating_agents":  updatingNodes,
 	})
 }

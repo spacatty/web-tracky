@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -122,11 +123,27 @@ func (s *Server) recordHeartbeat(r *http.Request, nodeID, core string, packVersi
 		arch = goarch
 	}
 	ip := clientIP(r)
-	var prevIP string
+	var prevIP, prevAdapter string
+	var prevLink int64
+	var prevRx, prevTx float64
 	var locked bool
-	err = s.pool.QueryRow(r.Context(), `SELECT ip, location_locked FROM nodes WHERE id = $1::uuid`, nodeID).Scan(&prevIP, &locked)
+	err = s.pool.QueryRow(r.Context(), `
+		SELECT ip, location_locked, adapter, link_speed_bps, rx_bps, tx_bps
+		FROM nodes WHERE id = $1::uuid`, nodeID).Scan(&prevIP, &locked, &prevAdapter, &prevLink, &prevRx, &prevTx)
 	if err != nil {
 		return err
+	}
+	if _, ok := metrics["net"]; !ok {
+		adapter = prevAdapter
+		link = float64(prevLink)
+		rx, tx = prevRx, prevTx
+	} else {
+		if adapter == "" {
+			adapter = prevAdapter
+		}
+		if link <= 0 {
+			link = float64(prevLink)
+		}
 	}
 	_, err = s.pool.Exec(r.Context(), `
 		UPDATE nodes SET
@@ -146,7 +163,12 @@ func (s *Server) recordHeartbeat(r *http.Request, nodeID, core string, packVersi
 			os = CASE WHEN $11 = '' THEN os ELSE $11 END,
 			arch = CASE WHEN $12 = '' THEN arch ELSE $12 END,
 			kernel = CASE WHEN $13 = '' THEN kernel ELSE $13 END,
-			last_sample = $14::jsonb
+			last_sample = $14::jsonb,
+			update_status = CASE WHEN update_target <> '' AND $2 = update_target THEN '' ELSE update_status END,
+			update_target = CASE WHEN update_target <> '' AND $2 = update_target THEN '' ELSE update_target END,
+			update_error = CASE WHEN update_target <> '' AND $2 = update_target THEN '' ELSE update_error END,
+			update_progress = CASE WHEN update_target <> '' AND $2 = update_target THEN 0 ELSE update_progress END,
+			update_at = CASE WHEN update_target <> '' AND $2 = update_target THEN NULL ELSE update_at END
 		WHERE id = $1::uuid`,
 		nodeID, clampText(core, 40), packVersion, ip, clampText(adapter, 64), int64(link), rx, tx, rtt,
 		clampText(hostname, 80), clampText(osName, 40), clampText(arch, 40), clampText(kernel, 80), string(sample),
@@ -330,6 +352,59 @@ func (s *Server) postResult(w http.ResponseWriter, r *http.Request) {
 		"run_finished": runFinished,
 	})
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+func (s *Server) agentUpdate(w http.ResponseWriter, r *http.Request) {
+	nodeID, err := s.nodeFromRequest(r)
+	if err != nil {
+		writeErr(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	var body struct {
+		Status   string `json:"status"`
+		Target   string `json:"target"`
+		Error    string `json:"error"`
+		Progress int    `json:"progress"`
+	}
+	if err := decodeJSON(r, &body); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	switch body.Status {
+	case "downloading", "verifying", "installing", "restarting", "failed":
+	default:
+		writeErr(w, http.StatusBadRequest, "invalid update status")
+		return
+	}
+	target := strings.TrimSpace(body.Target)
+	if target == "" || len(target) > 40 {
+		writeErr(w, http.StatusBadRequest, "invalid update target")
+		return
+	}
+	if body.Progress < 0 {
+		body.Progress = 0
+	}
+	if body.Progress > 100 {
+		body.Progress = 100
+	}
+	tag, err := s.pool.Exec(r.Context(), `
+		UPDATE nodes SET
+			update_status = $2,
+			update_target = $3,
+			update_error = $4,
+			update_progress = $5,
+			update_at = now()
+		WHERE id = $1::uuid`,
+		nodeID, body.Status, target, clampText(body.Error, 300), body.Progress)
+	if err != nil {
+		writeAPIError(w, err)
+		return
+	}
+	if tag.RowsAffected() == 0 {
+		writeAPIError(w, errNotFound)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": body.Status})
 }
 
 func (s *Server) nodeFromRequest(r *http.Request) (string, error) {

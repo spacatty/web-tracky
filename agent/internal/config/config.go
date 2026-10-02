@@ -66,6 +66,7 @@ func LoadPack(dir string) Pack {
 		HeartbeatSec: 15,
 		Heartbeat: []map[string]any{
 			{"op": "host.info", "save": "host"},
+			{"op": "net.sample", "save": "net"},
 			{"op": "net.speed", "save": "speed", "interval_sec": 300},
 		},
 	}

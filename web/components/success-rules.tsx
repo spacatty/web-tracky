@@ -5,12 +5,10 @@ import { InfoIcon, XIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { blankRule, type DraftRule } from "@/lib/success";
-
-const field =
-  "h-8 rounded-lg border border-input bg-transparent px-2 text-sm outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 dark:bg-input/30";
 
 export function SuccessRulesField({
   enabled,
@@ -35,10 +33,10 @@ export function SuccessRulesField({
           <Tooltip>
             <TooltipTrigger
               render={
-                <button type="button" className="text-muted-foreground hover:text-foreground" aria-label="About custom success matching" />
+                <Button type="button" variant="ghost" size="icon-xs" className="text-muted-foreground" aria-label="About custom success matching" />
               }
             >
-              <InfoIcon className="size-3.5" />
+              <InfoIcon />
             </TooltipTrigger>
             <TooltipContent className="max-w-64 text-left leading-snug">
               When this is on, a check succeeds only if it matches the rules below. HTTP 200 is not a success unless you add a rule for it. Each rule is a status and a body check. Later rules combine from the top with and or or.
@@ -59,17 +57,22 @@ export function SuccessRulesField({
           {rules.map((rule, index) => (
             <div key={index} className="flex flex-wrap items-center gap-1.5">
               {index === 0 ? (
-                <span className="w-14 text-xs text-muted-foreground">when</span>
+                <span className="w-20 text-xs text-muted-foreground">when</span>
               ) : (
-                <select
-                  aria-label={`Combine rule ${index + 1}`}
-                  className={`${field} w-14`}
+                <Select
                   value={rule.join}
-                  onChange={(event) => update(index, { join: event.target.value as DraftRule["join"] })}
+                  onValueChange={(value) => {
+                    if (value === "and" || value === "or") update(index, { join: value });
+                  }}
                 >
-                  <option value="or">or</option>
-                  <option value="and">and</option>
-                </select>
+                  <SelectTrigger aria-label={`Combine rule ${index + 1}`} className="w-20">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent align="start">
+                    <SelectItem value="or">or</SelectItem>
+                    <SelectItem value="and">and</SelectItem>
+                  </SelectContent>
+                </Select>
               )}
               <Input
                 aria-label={`HTTP status ${index + 1}`}
@@ -79,16 +82,21 @@ export function SuccessRulesField({
                 value={rule.status}
                 onChange={(event) => update(index, { status: event.target.value })}
               />
-              <select
-                aria-label={`Body match ${index + 1}`}
-                className={`${field} w-36`}
+              <Select
                 value={rule.body}
-                onChange={(event) => update(index, { body: event.target.value as DraftRule["body"] })}
+                onValueChange={(value) => {
+                  if (value === "any" || value === "empty" || value === "contains") update(index, { body: value });
+                }}
               >
-                <option value="any">any body</option>
-                <option value="empty">empty body</option>
-                <option value="contains">body contains</option>
-              </select>
+                <SelectTrigger aria-label={`Body match ${index + 1}`} className="w-40">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent align="start">
+                  <SelectItem value="any">any body</SelectItem>
+                  <SelectItem value="empty">empty body</SelectItem>
+                  <SelectItem value="contains">body contains</SelectItem>
+                </SelectContent>
+              </Select>
               {rule.body === "contains" ? (
                 <Input
                   aria-label={`Response text ${index + 1}`}

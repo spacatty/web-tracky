@@ -90,7 +90,7 @@ export function DataTable<T>({
           </DropdownMenuContent>
         </DropdownMenu>
       </div>
-      <div className="overflow-hidden rounded-xl border bg-card">
+      <div className="overflow-x-auto rounded-xl border bg-card">
         <Table>
           <TableHeader>
             {table.getHeaderGroups().map((group) => (
@@ -98,14 +98,20 @@ export function DataTable<T>({
                 {group.headers.map((header) => (
                   <TableHead key={header.id} className="text-xs tracking-wide text-muted-foreground uppercase">
                     {header.isPlaceholder ? null : (
-                      <button
+                      <Button
                         type="button"
-                        className={header.column.getCanSort() ? "inline-flex items-center gap-1 hover:text-foreground" : ""}
+                        variant="ghost"
+                        size="xs"
+                        className={
+                          header.column.getCanSort()
+                            ? "h-auto gap-1 px-0 text-xs font-normal tracking-wide uppercase hover:bg-transparent hover:text-foreground"
+                            : "h-auto cursor-default gap-1 px-0 text-xs font-normal tracking-wide uppercase hover:bg-transparent"
+                        }
                         onClick={header.column.getToggleSortingHandler()}
                       >
                         {flexRender(header.column.columnDef.header, header.getContext())}
                         {{ asc: " ↑", desc: " ↓" }[header.column.getIsSorted() as string] ?? null}
-                      </button>
+                      </Button>
                     )}
                   </TableHead>
                 ))}

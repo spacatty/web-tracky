@@ -160,7 +160,7 @@ function CreateMonitor({ open, onOpenChange, onCreated }: { open: boolean; onOpe
           <div className="space-y-2">
             <Label>Pool</Label>
             {(groups.data ?? []).map((group) => (
-              <label key={group.id} className="flex items-center gap-2 text-sm">
+              <Label key={group.id} className="font-normal">
                 <Checkbox
                   checked={groupIDs.includes(group.id)}
                   onCheckedChange={(checked) =>
@@ -169,7 +169,7 @@ function CreateMonitor({ open, onOpenChange, onCreated }: { open: boolean; onOpe
                 />
                 {group.name}
                 <span className="text-xs text-muted-foreground">{group.visibility}</span>
-              </label>
+              </Label>
             ))}
           </div>
           <SuccessRulesField enabled={customSuccess} rules={successRules} onEnabledChange={setCustomSuccess} onChange={setSuccessRules} />

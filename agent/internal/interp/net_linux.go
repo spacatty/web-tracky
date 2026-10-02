@@ -21,7 +21,7 @@ func sampleNet(e *Engine) (any, error) {
 	iface := defaultIface()
 	rx, tx, err := readCounters(iface)
 	if err != nil {
-		return map[string]any{"adapter": iface, "rx_bps": 0.0, "tx_bps": 0.0, "link_speed_bps": 0.0}, err
+		return map[string]any{"adapter": iface, "rx_bps": 0.0, "tx_bps": 0.0, "link_speed_bps": linkSpeed(iface)}, nil
 	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -40,10 +40,24 @@ func sampleNet(e *Engine) (any, error) {
 	e.lastRX, e.lastTX, e.lastAt, e.have = rx, tx, time.Now(), true
 	return map[string]any{
 		"adapter":        iface,
+		"mac":            ifaceFile(iface, "address"),
+		"mtu":            ifaceFile(iface, "mtu"),
+		"state":          ifaceFile(iface, "operstate"),
 		"rx_bps":         rxBps,
 		"tx_bps":         txBps,
 		"link_speed_bps": linkSpeed(iface),
 	}, nil
+}
+
+func ifaceFile(iface, name string) string {
+	if iface == "" {
+		return ""
+	}
+	raw, err := os.ReadFile("/sys/class/net/" + iface + "/" + name)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(raw))
 }
 
 func defaultIface() string {
