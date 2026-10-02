@@ -2,8 +2,11 @@ package server
 
 import (
 	"context"
+	"log"
 	"net/http"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 
 	"tracky/api/internal/geo"
 )
@@ -182,24 +185,34 @@ func scanToken(row interface{ Scan(...any) error }) (tokenRow, error) {
 
 func (s *Server) enroll(w http.ResponseWriter, r *http.Request) {
 	ip := clientIP(r)
-	if !s.enrollHits.allow(ip, 20, time.Minute) {
-		writeErr(w, http.StatusTooManyRequests, "too many enroll attempts")
-		return
-	}
 	var body struct {
-		Token    string `json:"token"`
-		Hostname string `json:"hostname"`
-		OS       string `json:"os"`
-		Arch     string `json:"arch"`
+		Token      string `json:"token"`
+		NodeSecret string `json:"node_secret"`
+		Hostname   string `json:"hostname"`
+		OS         string `json:"os"`
+		Arch       string `json:"arch"`
 	}
 	if err := decodeJSON(r, &body); err != nil {
 		writeErr(w, http.StatusBadRequest, "invalid json")
 		return
 	}
 	if !validInstallToken(body.Token) {
-		writeErr(w, http.StatusUnauthorized, "invalid enroll token")
+		s.rejectEnroll(w, ip, "invalid enroll token")
 		return
 	}
+	secret := body.NodeSecret
+	if secret == "" {
+		var err error
+		secret, _, err = randomToken("nd_")
+		if err != nil {
+			writeAPIError(w, err)
+			return
+		}
+	} else if !validNodeSecret(secret) {
+		writeErr(w, http.StatusBadRequest, "invalid node secret")
+		return
+	}
+	secretHash := sha256Hex(secret)
 	hostname := body.Hostname
 	if hostname == "" {
 		hostname = "node"
@@ -223,17 +236,31 @@ func (s *Server) enroll(w http.ResponseWriter, r *http.Request) {
 		FROM enroll_tokens
 		WHERE token_hash = $1
 		FOR UPDATE`, sha256Hex(body.Token)).Scan(&tokenID, &expires, &maxUses, &uses, &revoked)
+	if isNoRows(err) {
+		s.rejectEnroll(w, ip, "invalid enroll token")
+		return
+	}
 	if err != nil {
-		writeErr(w, http.StatusUnauthorized, "invalid enroll token")
+		writeAPIError(w, err)
+		return
+	}
+	if nodeID, ok, err := enrolledNode(r.Context(), tx, secretHash); err != nil {
+		writeAPIError(w, err)
+		return
+	} else if ok {
+		if err := tx.Commit(r.Context()); err != nil {
+			writeAPIError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]string{
+			"node_id":     nodeID,
+			"node_secret": secret,
+			"name":        hostname,
+		})
 		return
 	}
 	if revoked || (expires != nil && time.Now().After(*expires)) || (maxUses > 0 && uses >= maxUses) {
 		writeErr(w, http.StatusUnauthorized, "enroll token is no longer valid")
-		return
-	}
-	secret, secretHash, err := randomToken("nd_")
-	if err != nil {
-		writeAPIError(w, err)
 		return
 	}
 	var nodeID string
@@ -241,6 +268,23 @@ func (s *Server) enroll(w http.ResponseWriter, r *http.Request) {
 		INSERT INTO nodes (name, token_hash, ip, hostname, os, arch)
 		VALUES ($1, $2, $3, $1, $4, $5)
 		RETURNING id::text`, hostname, secretHash, ip, clampText(body.OS, 40), clampText(body.Arch, 40)).Scan(&nodeID)
+	if isUnique(err) {
+		nodeID, ok, lookupErr := enrolledNode(r.Context(), s.pool, secretHash)
+		if lookupErr != nil {
+			writeAPIError(w, lookupErr)
+			return
+		}
+		if !ok {
+			writeErr(w, http.StatusConflict, "enroll raced, retry")
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]string{
+			"node_id":     nodeID,
+			"node_secret": secret,
+			"name":        hostname,
+		})
+		return
+	}
 	if err != nil {
 		writeAPIError(w, err)
 		return
@@ -251,8 +295,17 @@ func (s *Server) enroll(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, err)
 		return
 	}
-	if _, err := tx.Exec(r.Context(), `UPDATE enroll_tokens SET uses = uses + 1 WHERE id = $1::uuid`, tokenID); err != nil {
+	tag, err := tx.Exec(r.Context(), `
+		UPDATE enroll_tokens
+		SET uses = uses + 1
+		WHERE id = $1::uuid AND revoked = false AND uses < max_uses
+			AND (expires_at IS NULL OR expires_at > now())`, tokenID)
+	if err != nil {
 		writeAPIError(w, err)
+		return
+	}
+	if tag.RowsAffected() == 0 {
+		writeErr(w, http.StatusUnauthorized, "enroll token is no longer valid")
 		return
 	}
 	if err := tx.Commit(r.Context()); err != nil {
@@ -265,6 +318,34 @@ func (s *Server) enroll(w http.ResponseWriter, r *http.Request) {
 		"node_secret": secret,
 		"name":        hostname,
 	})
+}
+
+// rejectEnroll limits unknown tokens. A real token is already capped by max_uses,
+// so a fleet behind one address can enroll together instead of sharing a 20/min bucket.
+func (s *Server) rejectEnroll(w http.ResponseWriter, ip, msg string) {
+	if !s.enrollHits.allow(ip, 20, time.Minute) {
+		log.Printf("enroll rejected: too many attempts ip=%s", ip)
+		writeErr(w, http.StatusTooManyRequests, "too many enroll attempts")
+		return
+	}
+	log.Printf("enroll rejected: %s ip=%s", msg, ip)
+	writeErr(w, http.StatusUnauthorized, msg)
+}
+
+type queryRower interface {
+	QueryRow(context.Context, string, ...any) pgx.Row
+}
+
+func enrolledNode(ctx context.Context, q queryRower, secretHash string) (string, bool, error) {
+	var id string
+	err := q.QueryRow(ctx, `SELECT id::text FROM nodes WHERE token_hash = $1`, secretHash).Scan(&id)
+	if isNoRows(err) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, err
+	}
+	return id, true, nil
 }
 
 func (s *Server) locateNode(nodeID, ip string) {

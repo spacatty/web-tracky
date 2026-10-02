@@ -2,6 +2,7 @@ package server
 
 import (
 	"net/http"
+	"strings"
 	"testing"
 )
 
@@ -19,6 +20,15 @@ func TestClientIPUsesLastForwardedWhenRealIPMissing(t *testing.T) {
 	req.Header.Set("X-Forwarded-For", "1.2.3.4, 203.0.113.10")
 	if got := clientIP(req); got != "203.0.113.10" {
 		t.Fatalf("clientIP = %q", got)
+	}
+}
+
+func TestValidNodeSecret(t *testing.T) {
+	if !validNodeSecret("nd_" + strings.Repeat("ab", 32)) {
+		t.Fatal("expected 32-byte hex secret to pass")
+	}
+	if validNodeSecret("nd_abc") || validNodeSecret("trk_"+strings.Repeat("ab", 32)) || validNodeSecret("nd_"+strings.Repeat("AB", 32)) {
+		t.Fatal("expected malformed secrets to fail")
 	}
 }
 

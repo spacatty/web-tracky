@@ -3,7 +3,10 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -46,7 +49,7 @@ func main() {
 		client:  &http.Client{Timeout: 90 * time.Second},
 		pack:    config.LoadPack(config.StateDir(path)),
 	}
-	if cfg.NodeSecret == "" {
+	if cfg.NodeID == "" {
 		if err := agent.enroll(context.Background()); err != nil {
 			log.Fatal(err)
 		}
@@ -104,16 +107,73 @@ func (a *app) loop() {
 	}
 }
 
+type enrollStatusError struct {
+	status int
+	body   string
+}
+
+func (e *enrollStatusError) Error() string {
+	return fmt.Sprintf("enroll: %d %s", e.status, e.body)
+}
+
+func newNodeSecret() (string, error) {
+	buf := make([]byte, 32)
+	if _, err := rand.Read(buf); err != nil {
+		return "", err
+	}
+	return "nd_" + hex.EncodeToString(buf), nil
+}
+
 func (a *app) enroll(ctx context.Context) error {
+	if a.cfg.NodeID != "" {
+		return nil
+	}
 	if a.cfg.EnrollToken == "" {
 		return fmt.Errorf("config %s has no enroll token", a.cfgPath)
 	}
+	if a.cfg.NodeSecret == "" {
+		secret, err := newNodeSecret()
+		if err != nil {
+			return err
+		}
+		a.cfg.NodeSecret = secret
+		if err := config.Save(a.cfgPath, a.cfg); err != nil {
+			return err
+		}
+	}
+	wait := 2 * time.Second
+	for {
+		err := a.enrollOnce(ctx)
+		if err == nil {
+			return nil
+		}
+		log.Printf("%v", err)
+		delay := wait
+		var statusErr *enrollStatusError
+		if errors.As(err, &statusErr) && statusErr.status == http.StatusTooManyRequests && delay < 15*time.Second {
+			delay = 15 * time.Second
+		}
+		timer := time.NewTimer(delay)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return ctx.Err()
+		case <-timer.C:
+		}
+		if wait < 30*time.Second {
+			wait *= 2
+		}
+	}
+}
+
+func (a *app) enrollOnce(ctx context.Context) error {
 	host, _ := os.Hostname()
 	body, _ := json.Marshal(map[string]string{
-		"token":    a.cfg.EnrollToken,
-		"hostname": host,
-		"os":       runtime.GOOS,
-		"arch":     runtime.GOARCH,
+		"token":       a.cfg.EnrollToken,
+		"node_secret": a.cfg.NodeSecret,
+		"hostname":    host,
+		"os":          runtime.GOOS,
+		"arch":        runtime.GOARCH,
 	})
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(a.cfg.Endpoint, "/")+"/agent/v1/enroll", bytes.NewReader(body))
 	if err != nil {
@@ -127,7 +187,7 @@ func (a *app) enroll(ctx context.Context) error {
 	defer res.Body.Close()
 	raw, _ := io.ReadAll(io.LimitReader(res.Body, 1<<20))
 	if res.StatusCode >= 300 {
-		return fmt.Errorf("enroll: %s", strings.TrimSpace(string(raw)))
+		return &enrollStatusError{status: res.StatusCode, body: strings.TrimSpace(string(raw))}
 	}
 	var out struct {
 		NodeID     string `json:"node_id"`
@@ -136,11 +196,16 @@ func (a *app) enroll(ctx context.Context) error {
 	if err := json.Unmarshal(raw, &out); err != nil {
 		return err
 	}
-	if out.NodeSecret == "" {
+	if out.NodeID == "" {
+		return fmt.Errorf("enroll response did not include a node id")
+	}
+	if out.NodeSecret != "" {
+		a.cfg.NodeSecret = out.NodeSecret
+	}
+	if a.cfg.NodeSecret == "" {
 		return fmt.Errorf("enroll response did not include a node secret")
 	}
 	a.cfg.NodeID = out.NodeID
-	a.cfg.NodeSecret = out.NodeSecret
 	a.cfg.EnrollToken = ""
 	return config.Save(a.cfgPath, a.cfg)
 }

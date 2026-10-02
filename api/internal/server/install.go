@@ -53,7 +53,7 @@ fi
 install -m 0755 "$tmp" /usr/local/bin/tracky-agent
 mkdir -p /etc/tracky-agent /var/lib/tracky-agent
 CONFIG=/etc/tracky-agent/config.json
-if [ -f "$CONFIG" ] && grep -q '"node_secret"[[:space:]]*:[[:space:]]*"[^"]' "$CONFIG"; then
+if [ -f "$CONFIG" ] && grep -q '"node_id"[[:space:]]*:[[:space:]]*"[^"]' "$CONFIG"; then
   echo "keeping the existing enrollment"
 else
   umask 077
@@ -74,14 +74,14 @@ Wants=network-online.target
 [Service]
 ExecStart=/usr/local/bin/tracky-agent
 Restart=always
-RestartSec=2
+RestartSec=5
 
 [Install]
 WantedBy=multi-user.target
 UNIT
 if command -v systemctl >/dev/null 2>&1; then
   systemctl daemon-reload
-  systemctl enable --now tracky-agent
+  systemctl enable tracky-agent
   systemctl restart tracky-agent
   echo "tracky-agent is running"
 else

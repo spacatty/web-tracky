@@ -255,6 +255,21 @@ func validInstallToken(s string) bool {
 	return true
 }
 
+func validNodeSecret(s string) bool {
+	rest, ok := strings.CutPrefix(s, "nd_")
+	if !ok || len(rest) != 64 {
+		return false
+	}
+	for _, r := range rest {
+		switch {
+		case r >= '0' && r <= '9', r >= 'a' && r <= 'f':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
 func normalizeCountries(in []string) ([]string, error) {
 	out := make([]string, 0, len(in))
 	seen := map[string]bool{}
