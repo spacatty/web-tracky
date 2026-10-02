@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"time"
@@ -91,19 +92,20 @@ func (s *Server) nodeMetrics(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, err)
 		return
 	}
-	hours := 6
-	if r.URL.Query().Get("hours") == "24" {
-		hours = 24
+	from, to, err := chartWindow(r, 6*time.Hour)
+	if err != nil {
+		writeAPIError(w, err)
+		return
 	}
 	rows, err := s.pool.Query(r.Context(), `
-		SELECT date_trunc('minute', ts),
+		SELECT date_bin(make_interval(secs => $4), ts, TIMESTAMPTZ '2000-01-01'),
 			COALESCE(avg(down_bps), 0), COALESCE(avg(up_bps), 0),
 			COALESCE(avg(rx_bps), 0), COALESCE(avg(tx_bps), 0),
 			avg(api_rtt_ms)
 		FROM node_metrics
-		WHERE node_id = $1::uuid AND ts > now() - make_interval(hours => $2)
+		WHERE node_id = $1::uuid AND ts >= $2 AND ts <= $3
 		GROUP BY 1
-		ORDER BY 1`, r.PathValue("id"), hours)
+		ORDER BY 1`, r.PathValue("id"), from, to, metricBinSeconds(to.Sub(from)))
 	if err != nil {
 		writeAPIError(w, err)
 		return
@@ -611,6 +613,11 @@ func (s *Server) overview(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, err)
 		return
 	}
+	monitors, err := s.overviewMonitors(r.Context(), u)
+	if err != nil {
+		writeAPIError(w, err)
+		return
+	}
 	latest := ""
 	if manifest, err := s.loadManifest(); err == nil {
 		latest = manifest.Version
@@ -638,5 +645,82 @@ func (s *Server) overview(w http.ResponseWriter, r *http.Request) {
 		"agents_updating":  updating,
 		"agents_failed":    failed,
 		"updating_agents":  updatingNodes,
+		"monitors":         monitors,
 	})
+}
+
+type overviewMonitor struct {
+	ID            string         `json:"id"`
+	Name          string         `json:"name"`
+	LastStatus    string         `json:"last_status"`
+	LastCheckedAt *time.Time     `json:"last_checked_at"`
+	Uptime24h     *float64       `json:"uptime_24h"`
+	Buckets       []uptimeBucket `json:"buckets"`
+}
+
+func (s *Server) overviewMonitors(ctx context.Context, u User) ([]overviewMonitor, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT m.id::text, m.name,
+			COALESCE(last.last_status, 'unknown'),
+			last.last_checked_at,
+			up.uptime,
+			COALESCE(spark.buckets, '[]'::json)
+		FROM monitors m
+		LEFT JOIN LATERAL (
+			SELECT
+				CASE
+					WHEN count(*) FILTER (WHERE cr.status = 'pending') > 0 THEN 'pending'
+					WHEN count(*) FILTER (WHERE cr.status = 'fail') > 0 THEN 'fail'
+					WHEN count(*) FILTER (WHERE cr.status = 'ok') > 0 THEN 'ok'
+					ELSE 'unknown'
+				END AS last_status,
+				r.started_at AS last_checked_at
+			FROM check_runs r
+			LEFT JOIN check_results cr ON cr.run_id = r.id
+			WHERE r.monitor_id = m.id
+			GROUP BY r.id, r.started_at
+			ORDER BY r.started_at DESC
+			LIMIT 1
+		) last ON true
+		LEFT JOIN LATERAL (
+			SELECT avg(CASE WHEN cr.status = 'ok' THEN 1.0 ELSE 0 END) AS uptime
+			FROM check_results cr
+			WHERE cr.monitor_id = m.id AND cr.status <> 'pending' AND cr.finished_at > now() - interval '24 hours'
+		) up ON true
+		LEFT JOIN LATERAL (
+			SELECT json_agg(json_build_object('t', s.t, 'ok_ratio', s.ok_ratio) ORDER BY s.t) AS buckets
+			FROM (
+				SELECT date_trunc('hour', finished_at) AS t,
+					avg(CASE WHEN status = 'ok' THEN 1.0 ELSE 0 END) AS ok_ratio
+				FROM check_results
+				WHERE monitor_id = m.id AND status <> 'pending' AND finished_at > now() - interval '24 hours'
+				GROUP BY 1
+			) s
+		) spark ON true
+		WHERE $2::bool OR m.owner_id = $1::uuid
+		ORDER BY CASE WHEN COALESCE(last.last_status, '') = 'fail' THEN 0 ELSE 1 END, m.name
+		LIMIT 12`, u.ID, u.Admin())
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []overviewMonitor{}
+	for rows.Next() {
+		var item overviewMonitor
+		var raw []byte
+		if err := rows.Scan(&item.ID, &item.Name, &item.LastStatus, &item.LastCheckedAt, &item.Uptime24h, &raw); err != nil {
+			return nil, err
+		}
+		item.Buckets = []uptimeBucket{}
+		if len(raw) > 0 {
+			if err := json.Unmarshal(raw, &item.Buckets); err != nil {
+				return nil, err
+			}
+		}
+		if item.Buckets == nil {
+			item.Buckets = []uptimeBucket{}
+		}
+		out = append(out, item)
+	}
+	return out, rows.Err()
 }

@@ -1,37 +1,146 @@
 "use client";
 
-import { ActivityIcon, KeyRoundIcon, LayersIcon, LogOutIcon, MenuIcon, RadarIcon, SettingsIcon, UsersIcon } from "lucide-react";
+import {
+  ActivityIcon,
+  ChevronsUpDownIcon,
+  KeyRoundIcon,
+  LayersIcon,
+  LayoutDashboardIcon,
+  LogOutIcon,
+  RadarIcon,
+  SettingsIcon,
+  UsersIcon,
+  type LucideIcon,
+} from "lucide-react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { useState } from "react";
 
-import { Button } from "@/components/ui/button";
-import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuGroup,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import {
+  Sidebar,
+  SidebarContent,
+  SidebarFooter,
+  SidebarGroup,
+  SidebarGroupContent,
+  SidebarGroupLabel,
+  SidebarHeader,
+  SidebarInset,
+  SidebarMenu,
+  SidebarMenuButton,
+  SidebarMenuItem,
+  SidebarProvider,
+  SidebarRail,
+  SidebarTrigger,
+  useSidebar,
+} from "@/components/ui/sidebar";
 import { api } from "@/lib/api";
 import type { Me } from "@/lib/types";
-import { cn } from "cn";
 
-const links = [
-  { href: "/", label: "Overview", icon: ActivityIcon },
+type NavItem = { href: string; label: string; icon: LucideIcon };
+
+const watch: NavItem[] = [{ href: "/monitors", label: "Monitors", icon: ActivityIcon }];
+
+const fleet: NavItem[] = [
+  { href: "/", label: "Overview", icon: LayoutDashboardIcon },
   { href: "/nodes", label: "Nodes", icon: RadarIcon },
   { href: "/groups", label: "Groups", icon: LayersIcon },
-  { href: "/monitors", label: "Monitors", icon: ActivityIcon },
 ];
 
-export function Shell({ user, children }: { user: Me; children: React.ReactNode }) {
-  const pathname = usePathname();
-  const router = useRouter();
-  const [open, setOpen] = useState(false);
-  const items = [
-    ...links,
-    ...(user.role === "admin"
-      ? [
-          { href: "/enroll", label: "Enroll", icon: KeyRoundIcon },
-          { href: "/users", label: "Users", icon: UsersIcon },
-        ]
-      : []),
-    { href: "/settings", label: "Settings", icon: SettingsIcon },
+const admin: NavItem[] = [
+  { href: "/enroll", label: "Enroll", icon: KeyRoundIcon },
+  { href: "/users", label: "Users", icon: UsersIcon },
+];
+
+export function Shell({
+  user,
+  defaultSidebarOpen = true,
+  children,
+}: {
+  user: Me;
+  defaultSidebarOpen?: boolean;
+  children: React.ReactNode;
+}) {
+  const groups = [
+    { label: "Checks", items: watch },
+    { label: "Fleet", items: fleet },
+    ...(user.role === "admin" ? [{ label: "Admin", items: admin }] : []),
   ];
+
+  return (
+    <SidebarProvider defaultOpen={defaultSidebarOpen}>
+      <Sidebar collapsible="icon">
+        <SidebarHeader>
+          <SidebarMenu>
+            <SidebarMenuItem>
+              <SidebarMenuButton size="lg" tooltip="Tracky" render={<Link href="/monitors" />}>
+                <span className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-primary text-xs font-semibold text-primary-foreground">
+                  T
+                </span>
+                <span className="font-semibold tracking-tight">Tracky</span>
+              </SidebarMenuButton>
+            </SidebarMenuItem>
+          </SidebarMenu>
+        </SidebarHeader>
+        <SidebarContent>
+          {groups.map((group) => (
+            <SidebarGroup key={group.label}>
+              <SidebarGroupLabel>{group.label}</SidebarGroupLabel>
+              <SidebarGroupContent>
+                <SidebarMenu>
+                  {group.items.map((item) => (
+                    <NavLink key={item.href} item={item} />
+                  ))}
+                </SidebarMenu>
+              </SidebarGroupContent>
+            </SidebarGroup>
+          ))}
+        </SidebarContent>
+        <SidebarFooter>
+          <AccountMenu user={user} />
+        </SidebarFooter>
+        <SidebarRail />
+      </Sidebar>
+      <SidebarInset>
+        <header className="sticky top-0 z-20 flex h-12 shrink-0 items-center gap-2 border-b bg-background/90 px-3 backdrop-blur">
+          <SidebarTrigger />
+        </header>
+        <div className="mx-auto w-full max-w-6xl px-4 py-6 md:px-8 md:py-8">{children}</div>
+      </SidebarInset>
+    </SidebarProvider>
+  );
+}
+
+function NavLink({ item }: { item: NavItem }) {
+  const pathname = usePathname();
+  const { setOpenMobile } = useSidebar();
+  const active = item.href === "/" ? pathname === "/" : pathname.startsWith(item.href);
+  const Icon = item.icon;
+  return (
+    <SidebarMenuItem>
+      <SidebarMenuButton
+        isActive={active}
+        tooltip={item.label}
+        render={<Link href={item.href} onClick={() => setOpenMobile(false)} />}
+      >
+        <Icon />
+        <span>{item.label}</span>
+      </SidebarMenuButton>
+    </SidebarMenuItem>
+  );
+}
+
+function AccountMenu({ user }: { user: Me }) {
+  const { isMobile, state } = useSidebar();
+  const router = useRouter();
+  const initial = user.email.trim().charAt(0).toUpperCase() || "T";
 
   async function logout() {
     await api("/api/auth/logout", { method: "POST" });
@@ -39,62 +148,52 @@ export function Shell({ user, children }: { user: Me; children: React.ReactNode 
     router.refresh();
   }
 
-  const nav = (
-    <nav className="flex flex-col gap-1">
-      {items.map((item) => {
-        const active = item.href === "/" ? pathname === "/" : pathname.startsWith(item.href);
-        const Icon = item.icon;
-        return (
-          <Link
-            key={item.href}
-            href={item.href}
-            onClick={() => setOpen(false)}
-            className={cn(
-              "flex items-center gap-2 rounded-lg px-2.5 py-2 text-sm text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground",
-              active && "bg-accent font-medium text-accent-foreground",
-            )}
-          >
-            <Icon className="size-4" />
-            {item.label}
-          </Link>
-        );
-      })}
-    </nav>
-  );
-
   return (
-    <div className="min-h-screen md:grid md:grid-cols-[220px_1fr]">
-      <aside className="hidden border-r bg-sidebar md:flex md:flex-col md:px-3 md:py-4">
-        <Link href="/" className="mb-6 flex items-center gap-2 px-2">
-          <span className="grid size-7 place-items-center rounded-lg bg-primary text-xs font-semibold text-primary-foreground">T</span>
-          <span className="font-semibold tracking-tight">Tracky</span>
-        </Link>
-        {nav}
-        <div className="mt-auto space-y-3 px-2 pt-6">
-          <div className="truncate text-xs text-muted-foreground">{user.email}</div>
-          <Button variant="outline" size="sm" className="w-full" onClick={logout}>
-            <LogOutIcon />
-            Sign out
-          </Button>
-        </div>
-      </aside>
-      <div className="min-w-0">
-        <header className="flex items-center gap-3 border-b bg-sidebar px-4 py-3 md:hidden">
-          <Sheet open={open} onOpenChange={setOpen}>
-            <SheetTrigger render={<Button variant="outline" size="icon-sm" aria-label="Menu" />}>
-              <MenuIcon />
-            </SheetTrigger>
-            <SheetContent side="left" className="w-64">
-              <SheetHeader>
-                <SheetTitle>Tracky</SheetTitle>
-              </SheetHeader>
-              {nav}
-            </SheetContent>
-          </Sheet>
-          <span className="font-semibold tracking-tight">Tracky</span>
-        </header>
-        <main className="mx-auto w-full max-w-6xl px-4 py-6 md:px-8 md:py-8">{children}</main>
-      </div>
-    </div>
+    <SidebarMenu>
+      <SidebarMenuItem>
+        <DropdownMenu>
+          <DropdownMenuTrigger
+            render={
+              <SidebarMenuButton
+                size="lg"
+                className="data-open:bg-sidebar-accent data-open:text-sidebar-accent-foreground"
+              />
+            }
+          >
+            <span className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-sidebar-primary text-xs font-medium text-sidebar-primary-foreground">
+              {initial}
+            </span>
+            <span className="grid min-w-0 flex-1 text-left leading-tight group-data-[collapsible=icon]:hidden">
+              <span className="truncate text-sm font-medium">{user.email}</span>
+              <span className="truncate text-xs text-muted-foreground capitalize">{user.role}</span>
+            </span>
+            <ChevronsUpDownIcon className="ml-auto size-4 text-muted-foreground group-data-[collapsible=icon]:hidden" />
+          </DropdownMenuTrigger>
+          <DropdownMenuContent
+            className="w-56! min-w-56"
+            side={isMobile ? "top" : state === "collapsed" ? "right" : "top"}
+            align="end"
+            sideOffset={8}
+          >
+            <DropdownMenuGroup>
+              <DropdownMenuLabel className="font-normal">
+                <span className="block truncate text-sm font-medium text-foreground">{user.email}</span>
+                <span className="block capitalize">{user.role}</span>
+              </DropdownMenuLabel>
+            </DropdownMenuGroup>
+            <DropdownMenuSeparator />
+            <DropdownMenuItem render={<Link href="/settings" />}>
+              <SettingsIcon />
+              Settings
+            </DropdownMenuItem>
+            <DropdownMenuSeparator />
+            <DropdownMenuItem onClick={logout}>
+              <LogOutIcon />
+              Sign out
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
+      </SidebarMenuItem>
+    </SidebarMenu>
   );
 }

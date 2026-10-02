@@ -123,7 +123,7 @@ export default function MonitorDetailPage() {
           <Button variant="outline" onClick={() => remove.mutate()}>Delete</Button>
         </div>
       </div>
-      <MonitorPanel monitor={monitor} run={run} shareHref={shareHref} />
+      <MonitorPanel monitor={monitor} run={run} shareHref={shareHref} seriesPath={`/api/monitors/${id}/series`} />
       <Dialog open={rulesOpen} onOpenChange={setRulesOpen}>
         <DialogContent className="max-h-[calc(100vh-2rem)] overflow-y-auto sm:max-w-xl">
           <DialogHeader>

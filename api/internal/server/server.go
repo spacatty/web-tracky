@@ -141,10 +141,12 @@ func (s *Server) Routes() http.Handler {
 
 	mux.HandleFunc("GET /api/monitors", s.requireUser(s.listMonitors))
 	mux.HandleFunc("POST /api/monitors", s.requireUser(s.createMonitor))
+	mux.HandleFunc("GET /api/monitors/{id}/series", s.requireUser(s.monitorSeries))
 	mux.HandleFunc("GET /api/monitors/{id}", s.requireUser(s.getMonitor))
 	mux.HandleFunc("PATCH /api/monitors/{id}", s.requireUser(s.patchMonitor))
 	mux.HandleFunc("DELETE /api/monitors/{id}", s.requireUser(s.deleteMonitor))
 	mux.HandleFunc("POST /api/monitors/{id}/check", s.requireUser(s.checkNow))
+	mux.HandleFunc("GET /api/public/status/{slug}/series", s.publicSeries)
 	mux.HandleFunc("GET /api/public/status/{slug}", s.publicStatus)
 	mux.HandleFunc("GET /api/stream", s.stream)
 

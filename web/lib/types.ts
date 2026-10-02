@@ -169,6 +169,20 @@ export type MonitorDetail = Monitor & {
   buckets: UptimeBucket[];
 };
 
+export type MonitorSeries = {
+  points: LatencyPoint[];
+  buckets: UptimeBucket[];
+};
+
+export type MonitorSnapshot = {
+  id: string;
+  name: string;
+  last_status: string;
+  last_checked_at: string | null;
+  uptime_24h: number | null;
+  buckets: UptimeBucket[];
+};
+
 export type AgentVersionCount = {
   version: string;
   count: number;
@@ -198,6 +212,7 @@ export type Overview = {
   agents_updating: number;
   agents_failed: number;
   updating_agents: UpdatingAgent[];
+  monitors: MonitorSnapshot[];
   recent_failures: {
     finished_at: string | null;
     monitor_id: string;

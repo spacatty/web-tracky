@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestClientIPUsesProxyHeaderFromDockerGateway(t *testing.T) {
@@ -38,6 +39,47 @@ func TestClientIPIgnoresSpoofedForwardedFromPublicPeer(t *testing.T) {
 	req.Header.Set("X-Forwarded-For", "1.2.3.4")
 	if got := clientIP(req); got != "203.0.113.10" {
 		t.Fatalf("clientIP = %q", got)
+	}
+}
+
+func TestChartWindowUsesFallback(t *testing.T) {
+	req := httptestRequest("127.0.0.1:1")
+	req.URL.RawQuery = ""
+	from, to, err := chartWindow(req, 6*time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	span := to.Sub(from)
+	if span < 6*time.Hour-time.Second || span > 6*time.Hour+time.Second {
+		t.Fatalf("span = %s", span)
+	}
+}
+
+func TestChartWindowRejectsPartialRange(t *testing.T) {
+	req := httptestRequest("127.0.0.1:1")
+	req.URL.RawQuery = "from=2026-10-01T00:00:00Z"
+	if _, _, err := chartWindow(req, time.Hour); err == nil {
+		t.Fatal("expected error")
+	}
+}
+
+func TestChartWindowClampsFutureAndRejectsLongSpan(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Second)
+	req := httptestRequest("127.0.0.1:1")
+	req.URL.RawQuery = "from=" + now.Add(-2*time.Hour).Format(time.RFC3339) + "&to=" + now.Add(3*time.Hour).Format(time.RFC3339)
+	from, to, err := chartWindow(req, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if to.After(time.Now().UTC().Add(time.Second)) {
+		t.Fatalf("to = %s", to)
+	}
+	if !from.Before(to) {
+		t.Fatalf("from %s to %s", from, to)
+	}
+	req.URL.RawQuery = "from=" + now.Add(-40*24*time.Hour).Format(time.RFC3339) + "&to=" + now.Format(time.RFC3339)
+	if _, _, err := chartWindow(req, time.Hour); err == nil {
+		t.Fatal("expected long range to fail")
 	}
 }
 

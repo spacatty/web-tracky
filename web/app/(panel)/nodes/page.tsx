@@ -1,12 +1,13 @@
 "use client";
 
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { ColumnDef } from "@tanstack/react-table";
 import { RefreshCwIcon } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Area, AreaChart, CartesianGrid, XAxis } from "recharts";
 import { toast } from "sonner";
 
+import { ChartRangePicker, useChartRange } from "@/components/chart-range";
 import { DataTable } from "@/components/data-table";
 import { LocationLabel } from "@/components/location";
 import { Badge } from "@/components/ui/badge";
@@ -18,6 +19,7 @@ import { Label } from "@/components/ui/label";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { ApiError, api } from "@/lib/api";
 import { formatAgo, formatLink, formatMs, formatRate, formatSpeed, locationLabel } from "@/lib/format";
+import { rangeQuery, tickLabel } from "@/lib/range";
 import type { FleetNode, Group, MetricPoint, Me } from "@/lib/types";
 
 const chartConfig = {
@@ -265,10 +267,13 @@ function NodeSheet({
   onClose: () => void;
   onSaved: () => void;
 }) {
+  const range = useChartRange();
   const metrics = useQuery({
-    queryKey: ["node-metrics", node?.id],
-    queryFn: () => api<MetricPoint[]>(`/api/nodes/${node?.id}/metrics?hours=6`),
+    queryKey: ["node-metrics", node?.id, range.preset, range.preset === "custom" ? range.from.toISOString() : "", range.preset === "custom" ? range.to.toISOString() : ""],
+    queryFn: () => api<MetricPoint[]>(`/api/nodes/${node?.id}/metrics?${rangeQuery(range.window)}`),
     enabled: Boolean(node),
+    placeholderData: keepPreviousData,
+    refetchInterval: range.preset === "custom" ? false : 15000,
   });
   const [name, setName] = useState("");
   const [city, setCity] = useState("");
@@ -339,8 +344,15 @@ function NodeSheet({
                   {refreshing ? "Measuring" : "Refresh metrics"}
                 </Button>
               ) : null}
-              <div className="space-y-1">
-                <p className="text-xs text-muted-foreground">Last 6 hours</p>
+              <div className="space-y-2">
+                <ChartRangePicker
+                  preset={range.preset}
+                  from={range.from}
+                  to={range.to}
+                  onPreset={range.selectPreset}
+                  onFrom={range.selectFrom}
+                  onTo={range.selectTo}
+                />
                 <ChartContainer config={chartConfig} className="aspect-auto h-36 w-full">
                   <AreaChart data={metrics.data ?? []} margin={{ left: 4, right: 8, top: 8 }}>
                     <CartesianGrid vertical={false} />
@@ -349,7 +361,7 @@ function NodeSheet({
                       tickLine={false}
                       axisLine={false}
                       minTickGap={28}
-                      tickFormatter={(value) => new Date(String(value)).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+                      tickFormatter={(value) => tickLabel(range.from, range.to, value)}
                     />
                     <ChartTooltip
                       content={

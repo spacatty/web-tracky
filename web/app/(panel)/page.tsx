@@ -3,11 +3,12 @@
 import { useQuery } from "@tanstack/react-query";
 import Link from "next/link";
 
+import { UptimeChart } from "@/components/latency-chart";
 import { StatusPill } from "@/components/status-pill";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { api } from "@/lib/api";
-import { formatAgo } from "@/lib/format";
+import { formatAgo, formatUptime } from "@/lib/format";
 import type { Overview } from "@/lib/types";
 
 export default function OverviewPage() {
@@ -32,12 +33,61 @@ export default function OverviewPage() {
         </div>
       ) : (
         <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-          <Stat label="Nodes online" value={`${data.nodes_online}`} hint={`${data.nodes_total} enrolled`} />
-          <Stat label="Monitors" value={`${data.monitors_total}`} hint={`${data.monitors_ok} currently up`} />
+          <Stat label="Monitors" value={`${data.monitors_total}`} hint={`${data.monitors_ok} up · ${data.monitors_failing} failing`} />
           <Stat label="Failing" value={`${data.monitors_failing}`} hint="latest run has an error" />
+          <Stat label="Nodes online" value={`${data.nodes_online}`} hint={`${data.nodes_total} enrolled`} />
           <Stat label="Coverage" value={data.nodes_total ? `${Math.round((data.nodes_online / data.nodes_total) * 100)}%` : "—"} hint="agents seen recently" />
         </div>
       )}
+      <Card>
+        <CardHeader>
+          <div className="flex items-center justify-between gap-3">
+            <CardTitle>Monitors</CardTitle>
+            <Link href="/monitors" className="text-xs text-muted-foreground hover:text-foreground">
+              All monitors
+            </Link>
+          </div>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          {!data ? <Skeleton className="h-28" /> : null}
+          {data && data.monitors_total > 0 ? (
+            <HealthBar ok={data.monitors_ok} failing={data.monitors_failing} total={data.monitors_total} />
+          ) : null}
+          {data && (data.monitors ?? []).length === 0 ? (
+            <p className="text-sm text-muted-foreground">No monitors yet. Add a URL to start checking it.</p>
+          ) : null}
+          {data && (data.monitors ?? []).length > 0 ? (
+            <div className="grid gap-3 sm:grid-cols-2">
+              {(data.monitors ?? []).map((monitor) => (
+                <Link key={monitor.id} href={`/monitors/${monitor.id}`} className="rounded-lg border px-3 py-2.5 hover:bg-accent">
+                  <div className="flex items-center justify-between gap-3">
+                    <span className="truncate text-sm font-medium">{monitor.name}</span>
+                    <StatusPill status={monitor.last_status} />
+                  </div>
+                  <div className="mt-2">
+                    {monitor.buckets.length > 0 ? (
+                      <UptimeChart buckets={monitor.buckets} className="h-8" />
+                    ) : (
+                      <p className="text-[11px] text-muted-foreground">No checks in the last 24h.</p>
+                    )}
+                  </div>
+                  <div className="mt-1 flex items-center justify-between text-[11px] text-muted-foreground">
+                    <span>
+                      24h <span className="font-mono text-foreground">{formatUptime(monitor.uptime_24h)}</span>
+                    </span>
+                    <span className="font-mono">{formatAgo(monitor.last_checked_at)}</span>
+                  </div>
+                </Link>
+              ))}
+            </div>
+          ) : null}
+          {data && data.monitors_total > (data.monitors ?? []).length ? (
+            <p className="text-xs text-muted-foreground">
+              Showing {(data.monitors ?? []).length} of {data.monitors_total}. Failing monitors are listed first.
+            </p>
+          ) : null}
+        </CardContent>
+      </Card>
       <Card>
         <CardHeader>
           <CardTitle>Agent versions</CardTitle>
@@ -139,6 +189,17 @@ function updateLabel(status: string) {
     default:
       return status || "Updating";
   }
+}
+
+function HealthBar({ ok, failing, total }: { ok: number; failing: number; total: number }) {
+  const other = Math.max(0, total - ok - failing);
+  return (
+    <div className="flex h-1.5 overflow-hidden rounded-full bg-muted">
+      {ok > 0 ? <span className="bg-emerald-500" style={{ width: `${(ok / total) * 100}%` }} /> : null}
+      {failing > 0 ? <span className="bg-destructive" style={{ width: `${(failing / total) * 100}%` }} /> : null}
+      {other > 0 ? <span className="bg-muted-foreground/40" style={{ width: `${(other / total) * 100}%` }} /> : null}
+    </div>
+  );
 }
 
 function Stat({ label, value, hint }: { label: string; value: string; hint: string }) {

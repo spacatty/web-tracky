@@ -37,7 +37,7 @@ export default function PublicStatusPage() {
               </p>
             </div>
           </div>
-          <MonitorPanel monitor={monitor} run={monitor.latest_run} />
+          <MonitorPanel monitor={monitor} run={monitor.latest_run} seriesPath={`/api/public/status/${params.slug}/series`} />
         </div>
       )}
     </main>

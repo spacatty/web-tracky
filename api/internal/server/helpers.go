@@ -13,7 +13,9 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
+	"time"
 	"unicode"
 	"unicode/utf8"
 )
@@ -77,6 +79,90 @@ func writeAPIError(w http.ResponseWriter, err error) {
 
 func badRequest(msg string) error {
 	return fmt.Errorf("%w: %s", errBadRequest, msg)
+}
+
+// chartWindow reads from/to (RFC3339) or a legacy hours query. An empty query uses fallback.
+func chartWindow(r *http.Request, fallback time.Duration) (time.Time, time.Time, error) {
+	now := time.Now().UTC()
+	q := r.URL.Query()
+	fromRaw, toRaw := strings.TrimSpace(q.Get("from")), strings.TrimSpace(q.Get("to"))
+	if fromRaw == "" && toRaw == "" {
+		span := fallback
+		if raw := strings.TrimSpace(q.Get("hours")); raw != "" {
+			hours, err := strconv.Atoi(raw)
+			if err != nil || hours < 1 || hours > 24*31 {
+				return time.Time{}, time.Time{}, badRequest("hours is outside the allowed range")
+			}
+			span = time.Duration(hours) * time.Hour
+		}
+		if span <= 0 {
+			span = 24 * time.Hour
+		}
+		return now.Add(-span), now, nil
+	}
+	if fromRaw == "" || toRaw == "" {
+		return time.Time{}, time.Time{}, badRequest("from and to are both required")
+	}
+	from, err := time.Parse(time.RFC3339Nano, fromRaw)
+	if err != nil {
+		return time.Time{}, time.Time{}, badRequest("from is not a valid time")
+	}
+	to, err := time.Parse(time.RFC3339Nano, toRaw)
+	if err != nil {
+		return time.Time{}, time.Time{}, badRequest("to is not a valid time")
+	}
+	from, to = from.UTC(), to.UTC()
+	if to.After(now) {
+		to = now
+	}
+	if !to.After(from) {
+		return time.Time{}, time.Time{}, badRequest("from must be before to")
+	}
+	if to.Sub(from) > 31*24*time.Hour {
+		return time.Time{}, time.Time{}, badRequest("range is longer than 31 days")
+	}
+	return from, to, nil
+}
+
+func latencyBinSeconds(span time.Duration) int {
+	switch {
+	case span <= 2*time.Hour:
+		return 60
+	case span <= 14*time.Hour:
+		return 2 * 60
+	case span <= 36*time.Hour:
+		return 10 * 60
+	case span <= 8*24*time.Hour:
+		return 60 * 60
+	default:
+		return 6 * 60 * 60
+	}
+}
+
+func uptimeBinSeconds(span time.Duration) int {
+	switch {
+	case span <= 3*time.Hour:
+		return 5 * 60
+	case span <= 18*time.Hour:
+		return 30 * 60
+	case span <= 48*time.Hour:
+		return 60 * 60
+	default:
+		return 3 * 60 * 60
+	}
+}
+
+func metricBinSeconds(span time.Duration) int {
+	switch {
+	case span <= 2*time.Hour:
+		return 60
+	case span <= 26*time.Hour:
+		return 5 * 60
+	case span <= 8*24*time.Hour:
+		return 60 * 60
+	default:
+		return 6 * 60 * 60
+	}
 }
 
 func decodeJSON(r *http.Request, dest any) error {

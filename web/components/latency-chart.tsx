@@ -4,11 +4,22 @@ import { cn } from "cn";
 import { CartesianGrid, Line, LineChart, XAxis, YAxis, Bar, BarChart } from "recharts";
 
 import { ChartContainer, ChartTooltip, ChartTooltipContent, type ChartConfig } from "@/components/ui/chart";
+import { tickLabel } from "@/lib/range";
 import type { LatencyPoint, UptimeBucket } from "@/lib/types";
 
 const palette = ["var(--chart-1)", "var(--chart-2)", "var(--chart-3)", "var(--chart-4)", "var(--chart-5)"];
 
-export function LatencyChart({ points, className }: { points: LatencyPoint[]; className?: string }) {
+export function LatencyChart({
+  points,
+  className,
+  from,
+  to,
+}: {
+  points: LatencyPoint[];
+  className?: string;
+  from?: Date;
+  to?: Date;
+}) {
   const series = new Map<string, string>();
   const rows = new Map<string, Record<string, string | number>>();
   for (const point of points) {
@@ -38,7 +49,9 @@ export function LatencyChart({ points, className }: { points: LatencyPoint[]; cl
           axisLine={false}
           minTickGap={28}
           tickFormatter={(value) =>
-            new Date(String(value)).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
+            from && to
+              ? tickLabel(from, to, value)
+              : new Date(String(value)).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
           }
         />
         <YAxis tickLine={false} axisLine={false} width={40} tickFormatter={(value) => `${value}`} />

@@ -353,7 +353,12 @@ func (s *Server) publicStatus(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, errNotFound)
 		return
 	}
-	detail, err := s.monitorDetail(r.Context(), id)
+	from, to, err := chartWindow(r, 24*time.Hour)
+	if err != nil {
+		writeAPIError(w, err)
+		return
+	}
+	detail, err := s.monitorDetail(r.Context(), id, from, to)
 	if err != nil {
 		writeAPIError(w, err)
 		return
@@ -362,8 +367,53 @@ func (s *Server) publicStatus(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, detail)
 }
 
+func (s *Server) publicSeries(w http.ResponseWriter, r *http.Request) {
+	var id string
+	err := s.pool.QueryRow(r.Context(), `
+		SELECT id::text FROM monitors WHERE public_slug = $1 AND public_enabled`, r.PathValue("slug")).Scan(&id)
+	if err != nil {
+		writeAPIError(w, errNotFound)
+		return
+	}
+	s.writeSeries(w, r, id)
+}
+
+func (s *Server) monitorSeries(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if err := s.monitorVisible(r.Context(), id, currentUser(r.Context())); err != nil {
+		writeAPIError(w, err)
+		return
+	}
+	s.writeSeries(w, r, id)
+}
+
+func (s *Server) writeSeries(w http.ResponseWriter, r *http.Request, id string) {
+	from, to, err := chartWindow(r, 24*time.Hour)
+	if err != nil {
+		writeAPIError(w, err)
+		return
+	}
+	points, buckets, err := s.series(r.Context(), id, from, to)
+	if err != nil {
+		writeAPIError(w, err)
+		return
+	}
+	if points == nil {
+		points = []latencyPoint{}
+	}
+	if buckets == nil {
+		buckets = []uptimeBucket{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"points": points, "buckets": buckets})
+}
+
 func (s *Server) writeMonitor(w http.ResponseWriter, r *http.Request, id string, code int) {
-	detail, err := s.monitorDetail(r.Context(), id)
+	from, to, err := chartWindow(r, 24*time.Hour)
+	if err != nil {
+		writeAPIError(w, err)
+		return
+	}
+	detail, err := s.monitorDetail(r.Context(), id, from, to)
 	if err != nil {
 		writeAPIError(w, err)
 		return
@@ -371,7 +421,7 @@ func (s *Server) writeMonitor(w http.ResponseWriter, r *http.Request, id string,
 	writeJSON(w, code, detail)
 }
 
-func (s *Server) monitorDetail(ctx context.Context, id string) (monitorDetail, error) {
+func (s *Server) monitorDetail(ctx context.Context, id string, from, to time.Time) (monitorDetail, error) {
 	var detail monitorDetail
 	row, err := s.loadMonitor(ctx, id)
 	if err != nil {
@@ -385,7 +435,14 @@ func (s *Server) monitorDetail(ctx context.Context, id string) (monitorDetail, e
 	if err == nil {
 		detail.LatestRun = &run
 	}
-	detail.Uptime7d, detail.Points, detail.Buckets, err = s.series(ctx, id, detail.Uptime24h)
+	err = s.pool.QueryRow(ctx, `
+		SELECT avg(CASE WHEN status = 'ok' THEN 1.0 ELSE 0 END)
+		FROM check_results
+		WHERE monitor_id = $1::uuid AND status <> 'pending' AND finished_at > now() - interval '7 days'`, id).Scan(&detail.Uptime7d)
+	if err != nil {
+		return detail, err
+	}
+	detail.Points, detail.Buckets, err = s.series(ctx, id, from, to)
 	if err != nil {
 		return detail, err
 	}
@@ -398,25 +455,21 @@ func (s *Server) monitorDetail(ctx context.Context, id string) (monitorDetail, e
 	return detail, nil
 }
 
-func (s *Server) series(ctx context.Context, id string, uptime24 *float64) (*float64, []latencyPoint, []uptimeBucket, error) {
-	var uptime7 *float64
-	err := s.pool.QueryRow(ctx, `
-		SELECT avg(CASE WHEN status = 'ok' THEN 1.0 ELSE 0 END)
-		FROM check_results
-		WHERE monitor_id = $1::uuid AND status <> 'pending' AND finished_at > now() - interval '7 days'`, id).Scan(&uptime7)
-	if err != nil {
-		return nil, nil, nil, err
-	}
-	_ = uptime24
+func (s *Server) series(ctx context.Context, id string, from, to time.Time) ([]latencyPoint, []uptimeBucket, error) {
+	span := to.Sub(from)
 	rows, err := s.pool.Query(ctx, `
-		SELECT finished_at, COALESCE(node_id::text, ''), node_name, city, country_code, total_ms, status = 'ok'
+		SELECT date_bin(make_interval(secs => $2), finished_at, TIMESTAMPTZ '2000-01-01'),
+			COALESCE(node_id::text, ''),
+			max(node_name), max(city), max(country_code),
+			avg(total_ms),
+			bool_and(status = 'ok')
 		FROM check_results
 		WHERE monitor_id = $1::uuid AND status <> 'pending' AND total_ms IS NOT NULL
-		  AND finished_at > now() - interval '24 hours'
-		ORDER BY finished_at DESC
-		LIMIT 2000`, id)
+		  AND finished_at >= $3 AND finished_at <= $4
+		GROUP BY 1, 2
+		ORDER BY 1`, id, latencyBinSeconds(span), from, to)
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, err
 	}
 	defer rows.Close()
 	points := []latencyPoint{}
@@ -424,36 +477,35 @@ func (s *Server) series(ctx context.Context, id string, uptime24 *float64) (*flo
 		var p latencyPoint
 		var name, city, code string
 		if err := rows.Scan(&p.T, &p.NodeID, &name, &city, &code, &p.TotalMS, &p.OK); err != nil {
-			return nil, nil, nil, err
+			return nil, nil, err
 		}
 		p.Label = locationLabel(city, code, name)
 		points = append(points, p)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, nil, nil, err
-	}
-	for i, j := 0, len(points)-1; i < j; i, j = i+1, j-1 {
-		points[i], points[j] = points[j], points[i]
+		return nil, nil, err
 	}
 	brows, err := s.pool.Query(ctx, `
-		SELECT date_trunc('hour', finished_at), avg(CASE WHEN status = 'ok' THEN 1.0 ELSE 0 END)
+		SELECT date_bin(make_interval(secs => $2), finished_at, TIMESTAMPTZ '2000-01-01'),
+			avg(CASE WHEN status = 'ok' THEN 1.0 ELSE 0 END)
 		FROM check_results
-		WHERE monitor_id = $1::uuid AND status <> 'pending' AND finished_at > now() - interval '24 hours'
+		WHERE monitor_id = $1::uuid AND status <> 'pending'
+		  AND finished_at >= $3 AND finished_at <= $4
 		GROUP BY 1
-		ORDER BY 1`, id)
+		ORDER BY 1`, id, uptimeBinSeconds(span), from, to)
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, err
 	}
 	defer brows.Close()
 	buckets := []uptimeBucket{}
 	for brows.Next() {
 		var b uptimeBucket
 		if err := brows.Scan(&b.T, &b.OKRatio); err != nil {
-			return nil, nil, nil, err
+			return nil, nil, err
 		}
 		buckets = append(buckets, b)
 	}
-	return uptime7, points, buckets, brows.Err()
+	return points, buckets, brows.Err()
 }
 
 func (s *Server) latestRun(ctx context.Context, monitorID string) (runView, error) {
