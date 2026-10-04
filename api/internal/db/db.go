@@ -23,6 +23,12 @@ var migrate4SQL string
 //go:embed migrate5.sql
 var migrate5SQL string
 
+//go:embed migrate6.sql
+var migrate6SQL string
+
+//go:embed migrate7.sql
+var migrate7SQL string
+
 func Connect(ctx context.Context, url string) (*pgxpool.Pool, error) {
 	pool, err := pgxpool.New(ctx, url)
 	if err != nil {
@@ -93,6 +99,24 @@ func Migrate(ctx context.Context, pool *pgxpool.Pool) error {
 	if updateCols == 0 {
 		if _, err := tx.Exec(ctx, migrate5SQL); err != nil {
 			return fmt.Errorf("migrate v5: %w", err)
+		}
+	}
+	var v6 int
+	if err := tx.QueryRow(ctx, `SELECT count(*) FROM schema_migrations WHERE version = 6`).Scan(&v6); err != nil {
+		return err
+	}
+	if v6 == 0 {
+		if _, err := tx.Exec(ctx, migrate6SQL); err != nil {
+			return fmt.Errorf("migrate v6: %w", err)
+		}
+	}
+	var v7 int
+	if err := tx.QueryRow(ctx, `SELECT count(*) FROM schema_migrations WHERE version = 7`).Scan(&v7); err != nil {
+		return err
+	}
+	if v7 == 0 {
+		if _, err := tx.Exec(ctx, migrate7SQL); err != nil {
+			return fmt.Errorf("migrate v7: %w", err)
 		}
 	}
 	return tx.Commit(ctx)

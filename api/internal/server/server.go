@@ -22,6 +22,7 @@ type Server struct {
 	broker     *Broker
 	waker      *Waker
 	enrollHits *limiter
+	statusHits *limiter
 	dummyHash  []byte
 	manifestMu sync.Mutex
 	manifestAt time.Time
@@ -37,6 +38,7 @@ func New(cfg config.Config, pool *pgxpool.Pool) *Server {
 		broker:     newBroker(),
 		waker:      newWaker(),
 		enrollHits: &limiter{},
+		statusHits: &limiter{},
 		dummyHash:  dummy,
 	}
 }
@@ -139,7 +141,17 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("POST /api/enroll-tokens", s.requireAdmin(s.createToken))
 	mux.HandleFunc("DELETE /api/enroll-tokens/{id}", s.requireAdmin(s.revokeToken))
 
+	mux.HandleFunc("GET /api/status-templates", s.requireUser(s.listTemplates))
+	mux.HandleFunc("POST /api/status-templates", s.requireUser(s.createTemplate))
+	mux.HandleFunc("PATCH /api/status-templates/{id}", s.requireUser(s.patchTemplate))
+	mux.HandleFunc("DELETE /api/status-templates/{id}", s.requireUser(s.deleteTemplate))
+
+	mux.HandleFunc("GET /api/spot-checks", s.requireUser(s.listSpotChecks))
+	mux.HandleFunc("POST /api/spot-checks", s.requireUser(s.createSpotCheck))
+	mux.HandleFunc("GET /api/spot-checks/{id}", s.requireUser(s.getSpotCheck))
+
 	mux.HandleFunc("GET /api/monitors", s.requireUser(s.listMonitors))
+	mux.HandleFunc("POST /api/monitors/import", s.requireUser(s.importMonitors))
 	mux.HandleFunc("POST /api/monitors", s.requireUser(s.createMonitor))
 	mux.HandleFunc("GET /api/monitors/{id}/series", s.requireUser(s.monitorSeries))
 	mux.HandleFunc("GET /api/monitors/{id}", s.requireUser(s.getMonitor))
@@ -148,6 +160,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("POST /api/monitors/{id}/check", s.requireUser(s.checkNow))
 	mux.HandleFunc("GET /api/public/status/{slug}/series", s.publicSeries)
 	mux.HandleFunc("GET /api/public/status/{slug}", s.publicStatus)
+	mux.HandleFunc("POST /api/public/status/{slug}/unlock", s.unlockStatus)
 	mux.HandleFunc("GET /api/stream", s.stream)
 
 	mux.HandleFunc("GET /install.sh", s.installScript)

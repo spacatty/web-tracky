@@ -13,6 +13,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -317,6 +318,138 @@ func validateURL(raw string) (string, error) {
 		return "", badRequest("url must be http or https")
 	}
 	return u.String(), nil
+}
+
+var linkPattern = regexp.MustCompile(`https?://[^\s,<>"]+`)
+
+type linkItem struct {
+	Name string
+	URL  string
+	Line int
+}
+
+// parseLinkList reads a pasted list or text file. Blank lines and # comments are
+// skipped. A line may be a bare host, one or more http(s) links, or a name
+// followed by a single link.
+func parseLinkList(text string, limit int) ([]linkItem, error) {
+	if limit < 1 {
+		limit = 1
+	}
+	text = strings.TrimPrefix(text, "\uFEFF")
+	text = strings.ReplaceAll(text, "\r\n", "\n")
+	text = strings.ReplaceAll(text, "\r", "\n")
+	var items []linkItem
+	seen := map[string]struct{}{}
+	for i, line := range strings.Split(text, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		found, err := linksOnLine(line)
+		if err != nil {
+			return nil, badRequest(fmt.Sprintf("line %d is not a link", i+1))
+		}
+		for _, raw := range found {
+			normalized, err := validateURL(raw.url)
+			if err != nil {
+				msg := strings.TrimPrefix(err.Error(), "bad request: ")
+				return nil, badRequest(fmt.Sprintf("line %d: %s", i+1, msg))
+			}
+			if _, ok := seen[normalized]; ok {
+				continue
+			}
+			seen[normalized] = struct{}{}
+			items = append(items, linkItem{Name: strings.TrimSpace(raw.name), URL: normalized, Line: i + 1})
+			if len(items) > limit {
+				return nil, badRequest(fmt.Sprintf("at most %d links", limit))
+			}
+		}
+	}
+	if len(items) == 0 {
+		return nil, badRequest("add at least one link")
+	}
+	return items, nil
+}
+
+type namedLink struct {
+	name string
+	url  string
+}
+
+func linksOnLine(line string) ([]namedLink, error) {
+	matches := linkPattern.FindAllStringIndex(line, -1)
+	if len(matches) > 0 {
+		out := make([]namedLink, 0, len(matches))
+		for _, loc := range matches {
+			raw := strings.TrimRight(line[loc[0]:loc[1]], ".,);]>'\"")
+			name := ""
+			if len(matches) == 1 {
+				prefix := strings.Trim(strings.TrimSpace(line[:loc[0]]), " \t-|,:;")
+				if prefix != "" && !strings.Contains(prefix, "://") {
+					name = prefix
+				}
+			}
+			out = append(out, namedLink{name: name, url: raw})
+		}
+		return out, nil
+	}
+	parts := strings.FieldsFunc(line, func(r rune) bool { return r == ',' || r == ';' })
+	out := make([]namedLink, 0, len(parts))
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		if strings.ContainsAny(part, " \t") || !looksLikeHost(part) {
+			return nil, errBadRequest
+		}
+		out = append(out, namedLink{url: "https://" + part})
+	}
+	if len(out) == 0 {
+		return nil, errBadRequest
+	}
+	return out, nil
+}
+
+func looksLikeHost(token string) bool {
+	host := token
+	if i := strings.IndexAny(host, "/?#"); i >= 0 {
+		host = host[:i]
+	}
+	host = strings.TrimSuffix(host, ".")
+	if h, _, err := net.SplitHostPort(host); err == nil {
+		host = h
+	}
+	host = strings.Trim(host, "[]")
+	if host == "" {
+		return false
+	}
+	if strings.EqualFold(host, "localhost") || net.ParseIP(host) != nil {
+		return true
+	}
+	return strings.Contains(host, ".")
+}
+
+func linkName(item linkItem) string {
+	if name := clipRunes(item.Name, 80); name != "" {
+		return name
+	}
+	u, err := url.Parse(item.URL)
+	if err != nil || u.Hostname() == "" {
+		return "check"
+	}
+	if name := clipRunes(u.Hostname(), 80); name != "" {
+		return name
+	}
+	return "check"
+}
+
+func clipRunes(s string, n int) string {
+	s = strings.TrimSpace(s)
+	if s == "" || utf8.RuneCountInString(s) <= n {
+		return s
+	}
+	return strings.TrimSpace(string([]rune(s)[:n]))
 }
 
 func validateEndpoint(raw string) (string, error) {

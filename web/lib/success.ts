@@ -47,6 +47,12 @@ export function compileRules(enabled: boolean, rules: DraftRule[]): { ok: true; 
   return { ok: true, rules: out };
 }
 
+export function successLabel(name: string | null | undefined, rules: SuccessRule[] | null | undefined) {
+  const described = describeSuccess(rules);
+  const trimmed = name?.trim();
+  return trimmed ? `${trimmed} · ${described}` : described;
+}
+
 export function describeSuccess(rules: SuccessRule[] | null | undefined) {
   if (!rules || rules.length === 0) return "2xx–3xx";
   return rules

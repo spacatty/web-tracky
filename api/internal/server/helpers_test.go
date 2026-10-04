@@ -55,6 +55,41 @@ func TestChartWindowUsesFallback(t *testing.T) {
 	}
 }
 
+func TestParseLinkList(t *testing.T) {
+	items, err := parseLinkList("\uFEFFhttps://a.example\n# skip\n\nBilling https://b.example/health.\nexample.com/health\nhttps://a.example\nhttps://c.example, https://d.example", 50)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 5 {
+		t.Fatalf("len = %d", len(items))
+	}
+	if items[1].Name != "Billing" || items[1].URL != "https://b.example/health" {
+		t.Fatalf("named = %#v", items[1])
+	}
+	if items[2].URL != "https://example.com/health" || linkName(items[2]) != "example.com" {
+		t.Fatalf("bare = %#v name %q", items[2], linkName(items[2]))
+	}
+	if linkName(items[1]) != "Billing" {
+		t.Fatalf("name = %q", linkName(items[1]))
+	}
+}
+
+func TestParseLinkListRejectsProse(t *testing.T) {
+	if _, err := parseLinkList("not a link", 50); err == nil {
+		t.Fatal("expected error")
+	}
+	if _, err := parseLinkList("hello", 50); err == nil {
+		t.Fatal("expected bare word to fail")
+	}
+}
+
+func TestParseLinkListLimit(t *testing.T) {
+	_, err := parseLinkList("https://a.example\nhttps://b.example", 1)
+	if err == nil || !strings.Contains(err.Error(), "at most 1") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
 func TestChartWindowRejectsPartialRange(t *testing.T) {
 	req := httptestRequest("127.0.0.1:1")
 	req.URL.RawQuery = "from=2026-10-01T00:00:00Z"

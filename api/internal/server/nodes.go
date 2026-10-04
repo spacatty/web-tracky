@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"log"
 	"net/http"
 	"time"
 )
@@ -39,6 +40,7 @@ type nodeRow struct {
 	UpdateProgress int             `json:"update_progress"`
 	UpdateAt       *time.Time      `json:"update_at"`
 	CoreLatest     string          `json:"core_latest"`
+	Removing       bool            `json:"removing"`
 	Groups         []groupRef      `json:"groups"`
 	CreatedAt      time.Time       `json:"created_at"`
 }
@@ -305,17 +307,47 @@ func (s *Server) patchNode(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, row)
 }
 
+// deleteNode asks an online agent to uninstall itself on its next heartbeat and
+// removes the row once that heartbeat is answered. Offline nodes, or agents that
+// never pick the order up, are dropped right away or by sweepRemovedNodes.
 func (s *Server) deleteNode(w http.ResponseWriter, r *http.Request) {
-	tag, err := s.pool.Exec(r.Context(), `DELETE FROM nodes WHERE id = $1::uuid`, r.PathValue("id"))
+	id := r.PathValue("id")
+	var online bool
+	err := s.pool.QueryRow(r.Context(), `
+		SELECT last_seen_at IS NOT NULL AND last_seen_at > now() - make_interval(secs => $2)
+		FROM nodes WHERE id = $1::uuid`, id, s.offlineAfter(r.Context())).Scan(&online)
+	if isNoRows(err) {
+		writeAPIError(w, errNotFound)
+		return
+	}
 	if err != nil {
 		writeAPIError(w, err)
 		return
 	}
-	if tag.RowsAffected() == 0 {
-		writeAPIError(w, errNotFound)
+	if r.URL.Query().Get("force") == "1" || !online {
+		if _, err := s.pool.Exec(r.Context(), `DELETE FROM nodes WHERE id = $1::uuid`, id); err != nil {
+			writeAPIError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 		return
 	}
-	w.WriteHeader(http.StatusNoContent)
+	if _, err := s.pool.Exec(r.Context(), `UPDATE nodes SET removing_at = COALESCE(removing_at, now()) WHERE id = $1::uuid`, id); err != nil {
+		writeAPIError(w, err)
+		return
+	}
+	if _, err := s.pool.Exec(r.Context(), `UPDATE jobs SET status = 'expired' WHERE node_id = $1::uuid AND status = 'queued'`, id); err != nil {
+		writeAPIError(w, err)
+		return
+	}
+	s.waker.Notify(id)
+	writeJSON(w, http.StatusAccepted, map[string]string{"status": "removing"})
+}
+
+func (s *Server) sweepRemovedNodes() {
+	if _, err := s.pool.Exec(context.Background(), `DELETE FROM nodes WHERE removing_at < now() - interval '2 minutes'`); err != nil {
+		log.Printf("sweep nodes: %v", err)
+	}
 }
 
 func (s *Server) visibleNode(r *http.Request, id string, u User) (nodeRow, error) {
@@ -378,6 +410,7 @@ SELECT
 	n.update_error,
 	n.update_progress,
 	n.update_at,
+	n.removing_at IS NOT NULL,
 	n.created_at,
 	COALESCE((
 		SELECT json_agg(json_build_object('id', g.id::text, 'name', g.name, 'visibility', g.visibility) ORDER BY g.name)
@@ -402,7 +435,7 @@ func scanNode(row nodeScanner) (nodeRow, error) {
 		&n.ID, &n.Name, &n.Online, &n.LastSeenAt, &n.CoreVersion, &n.PackVersion, &n.IP,
 		&n.Country, &n.CountryCode, &n.City, &n.Latitude, &n.Longitude, &n.Adapter,
 		&n.LinkSpeedBps, &n.RxBps, &n.TxBps, &n.DownBps, &n.UpBps, &n.SpeedAt, &n.APIRTTMS, &n.Hostname, &n.OS, &n.Arch,
-		&n.Kernel, &n.LastSample, &n.UpdateStatus, &n.UpdateTarget, &n.UpdateError, &n.UpdateProgress, &n.UpdateAt, &n.CreatedAt, &raw,
+		&n.Kernel, &n.LastSample, &n.UpdateStatus, &n.UpdateTarget, &n.UpdateError, &n.UpdateProgress, &n.UpdateAt, &n.Removing, &n.CreatedAt, &raw,
 	)
 	if err != nil {
 		return n, err
@@ -452,13 +485,14 @@ func (s *Server) overview(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, err)
 		return
 	}
-	var monitorsTotal, monitorsFailing, monitorsOK int
+	var monitorsTotal, monitorsFailing, monitorsOK, monitorsPaused int
 	err = s.pool.QueryRow(r.Context(), `
 		SELECT count(*),
-			count(*) FILTER (WHERE last_status = 'fail'),
-			count(*) FILTER (WHERE last_status = 'ok')
+			count(*) FILTER (WHERE last_status = 'fail' AND enabled),
+			count(*) FILTER (WHERE last_status = 'ok' AND enabled),
+			count(*) FILTER (WHERE NOT enabled)
 		FROM (
-			SELECT m.id,
+			SELECT m.id, m.enabled,
 				(
 					SELECT CASE
 						WHEN count(*) FILTER (WHERE cr.status = 'pending') > 0 THEN 'pending'
@@ -474,8 +508,13 @@ func (s *Server) overview(w http.ResponseWriter, r *http.Request) {
 					LIMIT 1
 				) AS last_status
 			FROM monitors m
-			WHERE $2::bool OR m.owner_id = $1::uuid
-		) stats`, u.ID, u.Admin()).Scan(&monitorsTotal, &monitorsFailing, &monitorsOK)
+			WHERE m.kind = 'monitor' AND ($2::bool OR m.owner_id = $1::uuid)
+		) stats`, u.ID, u.Admin()).Scan(&monitorsTotal, &monitorsFailing, &monitorsOK, &monitorsPaused)
+	if err != nil {
+		writeAPIError(w, err)
+		return
+	}
+	checks, err := s.overviewChecks(r.Context(), u)
 	if err != nil {
 		writeAPIError(w, err)
 		return
@@ -484,9 +523,9 @@ func (s *Server) overview(w http.ResponseWriter, r *http.Request) {
 		SELECT cr.finished_at, m.id::text, m.name, cr.node_name, cr.city, cr.country_code, cr.http_status, cr.error
 		FROM check_results cr
 		JOIN monitors m ON m.id = cr.monitor_id
-		WHERE cr.status = 'fail' AND ($2::bool OR m.owner_id = $1::uuid)
+		WHERE cr.status = 'fail' AND m.kind = 'monitor' AND ($2::bool OR m.owner_id = $1::uuid)
 		ORDER BY cr.finished_at DESC NULLS LAST
-		LIMIT 8`, u.ID, u.Admin())
+		LIMIT 60`, u.ID, u.Admin())
 	if err != nil {
 		writeAPIError(w, err)
 		return
@@ -637,6 +676,8 @@ func (s *Server) overview(w http.ResponseWriter, r *http.Request) {
 		"monitors_total":   monitorsTotal,
 		"monitors_failing": monitorsFailing,
 		"monitors_ok":      monitorsOK,
+		"monitors_paused":  monitorsPaused,
+		"checks":           checks,
 		"recent_failures":  failures,
 		"agent_latest":     latest,
 		"agent_versions":   versions,
@@ -649,21 +690,109 @@ func (s *Server) overview(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+type checkHour struct {
+	T     time.Time `json:"t"`
+	OK    int       `json:"ok"`
+	Fail  int       `json:"fail"`
+	AvgMS *float64  `json:"avg_ms"`
+}
+
+type failSpot struct {
+	CountryCode string `json:"country_code"`
+	City        string `json:"city"`
+	Count       int    `json:"count"`
+}
+
+type checkSummary struct {
+	Total     int         `json:"total"`
+	Failed    int         `json:"failed"`
+	AvgMS     *float64    `json:"avg_ms"`
+	P95MS     *float64    `json:"p95_ms"`
+	Hours     []checkHour `json:"hours"`
+	FailSpots []failSpot  `json:"fail_spots"`
+}
+
+func (s *Server) overviewChecks(ctx context.Context, u User) (checkSummary, error) {
+	out := checkSummary{Hours: []checkHour{}, FailSpots: []failSpot{}}
+	const scope = `
+		FROM check_results cr
+		JOIN monitors m ON m.id = cr.monitor_id
+		WHERE cr.status <> 'pending' AND cr.finished_at > now() - interval '24 hours'
+		  AND m.kind = 'monitor' AND ($2::bool OR m.owner_id = $1::uuid)`
+	err := s.pool.QueryRow(ctx, `
+		SELECT count(*),
+			count(*) FILTER (WHERE cr.status = 'fail'),
+			avg(cr.total_ms) FILTER (WHERE cr.status = 'ok'),
+			percentile_cont(0.95) WITHIN GROUP (ORDER BY cr.total_ms) FILTER (WHERE cr.status = 'ok')`+scope,
+		u.ID, u.Admin()).Scan(&out.Total, &out.Failed, &out.AvgMS, &out.P95MS)
+	if err != nil {
+		return out, err
+	}
+	rows, err := s.pool.Query(ctx, `
+		SELECT date_trunc('hour', cr.finished_at),
+			count(*) FILTER (WHERE cr.status = 'ok'),
+			count(*) FILTER (WHERE cr.status = 'fail'),
+			avg(cr.total_ms) FILTER (WHERE cr.status = 'ok')`+scope+`
+		GROUP BY 1
+		ORDER BY 1`, u.ID, u.Admin())
+	if err != nil {
+		return out, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var h checkHour
+		if err := rows.Scan(&h.T, &h.OK, &h.Fail, &h.AvgMS); err != nil {
+			return out, err
+		}
+		out.Hours = append(out.Hours, h)
+	}
+	if err := rows.Err(); err != nil {
+		return out, err
+	}
+	spots, err := s.pool.Query(ctx, `
+		SELECT cr.country_code, cr.city, count(*)`+scope+` AND cr.status = 'fail'
+		GROUP BY 1, 2
+		ORDER BY 3 DESC, 1, 2
+		LIMIT 6`, u.ID, u.Admin())
+	if err != nil {
+		return out, err
+	}
+	defer spots.Close()
+	for spots.Next() {
+		var f failSpot
+		if err := spots.Scan(&f.CountryCode, &f.City, &f.Count); err != nil {
+			return out, err
+		}
+		out.FailSpots = append(out.FailSpots, f)
+	}
+	return out, spots.Err()
+}
+
+type overviewBucket struct {
+	T       time.Time `json:"t"`
+	OKRatio float64   `json:"ok_ratio"`
+	AvgMS   *float64  `json:"avg_ms"`
+}
+
 type overviewMonitor struct {
-	ID            string         `json:"id"`
-	Name          string         `json:"name"`
-	LastStatus    string         `json:"last_status"`
-	LastCheckedAt *time.Time     `json:"last_checked_at"`
-	Uptime24h     *float64       `json:"uptime_24h"`
-	Buckets       []uptimeBucket `json:"buckets"`
+	ID            string           `json:"id"`
+	Name          string           `json:"name"`
+	TargetURL     string           `json:"target_url"`
+	Enabled       bool             `json:"enabled"`
+	LastStatus    string           `json:"last_status"`
+	LastCheckedAt *time.Time       `json:"last_checked_at"`
+	Uptime24h     *float64         `json:"uptime_24h"`
+	AvgMS24h      *float64         `json:"avg_ms_24h"`
+	Buckets       []overviewBucket `json:"buckets"`
 }
 
 func (s *Server) overviewMonitors(ctx context.Context, u User) ([]overviewMonitor, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT m.id::text, m.name,
+		SELECT m.id::text, m.name, m.target_url, m.enabled,
 			COALESCE(last.last_status, 'unknown'),
 			last.last_checked_at,
 			up.uptime,
+			up.avg_ms,
 			COALESCE(spark.buckets, '[]'::json)
 		FROM monitors m
 		LEFT JOIN LATERAL (
@@ -683,23 +812,25 @@ func (s *Server) overviewMonitors(ctx context.Context, u User) ([]overviewMonito
 			LIMIT 1
 		) last ON true
 		LEFT JOIN LATERAL (
-			SELECT avg(CASE WHEN cr.status = 'ok' THEN 1.0 ELSE 0 END) AS uptime
+			SELECT avg(CASE WHEN cr.status = 'ok' THEN 1.0 ELSE 0 END) AS uptime,
+				avg(cr.total_ms) FILTER (WHERE cr.status = 'ok') AS avg_ms
 			FROM check_results cr
 			WHERE cr.monitor_id = m.id AND cr.status <> 'pending' AND cr.finished_at > now() - interval '24 hours'
 		) up ON true
 		LEFT JOIN LATERAL (
-			SELECT json_agg(json_build_object('t', s.t, 'ok_ratio', s.ok_ratio) ORDER BY s.t) AS buckets
+			SELECT json_agg(json_build_object('t', s.t, 'ok_ratio', s.ok_ratio, 'avg_ms', s.avg_ms) ORDER BY s.t) AS buckets
 			FROM (
 				SELECT date_trunc('hour', finished_at) AS t,
-					avg(CASE WHEN status = 'ok' THEN 1.0 ELSE 0 END) AS ok_ratio
+					avg(CASE WHEN status = 'ok' THEN 1.0 ELSE 0 END) AS ok_ratio,
+					avg(total_ms) FILTER (WHERE status = 'ok') AS avg_ms
 				FROM check_results
 				WHERE monitor_id = m.id AND status <> 'pending' AND finished_at > now() - interval '24 hours'
 				GROUP BY 1
 			) s
 		) spark ON true
-		WHERE $2::bool OR m.owner_id = $1::uuid
-		ORDER BY CASE WHEN COALESCE(last.last_status, '') = 'fail' THEN 0 ELSE 1 END, m.name
-		LIMIT 12`, u.ID, u.Admin())
+		WHERE m.kind = 'monitor' AND ($2::bool OR m.owner_id = $1::uuid)
+		ORDER BY CASE WHEN NOT m.enabled THEN 2 WHEN COALESCE(last.last_status, '') = 'fail' THEN 0 ELSE 1 END, m.name
+		LIMIT 50`, u.ID, u.Admin())
 	if err != nil {
 		return nil, err
 	}
@@ -708,17 +839,16 @@ func (s *Server) overviewMonitors(ctx context.Context, u User) ([]overviewMonito
 	for rows.Next() {
 		var item overviewMonitor
 		var raw []byte
-		if err := rows.Scan(&item.ID, &item.Name, &item.LastStatus, &item.LastCheckedAt, &item.Uptime24h, &raw); err != nil {
+		if err := rows.Scan(&item.ID, &item.Name, &item.TargetURL, &item.Enabled, &item.LastStatus, &item.LastCheckedAt, &item.Uptime24h, &item.AvgMS24h, &raw); err != nil {
 			return nil, err
 		}
-		item.Buckets = []uptimeBucket{}
 		if len(raw) > 0 {
 			if err := json.Unmarshal(raw, &item.Buckets); err != nil {
 				return nil, err
 			}
 		}
 		if item.Buckets == nil {
-			item.Buckets = []uptimeBucket{}
+			item.Buckets = []overviewBucket{}
 		}
 		out = append(out, item)
 	}

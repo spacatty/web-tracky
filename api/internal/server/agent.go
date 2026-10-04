@@ -54,14 +54,17 @@ func (s *Server) heartbeat(w http.ResponseWriter, r *http.Request) {
 	heldStart := time.Now()
 	deadline := heldStart.Add(time.Duration(doc.HeartbeatSec) * time.Second)
 	var jobs []jobInfo
-	var refresh bool
+	var refresh, removing bool
 	for {
-		jobs, err = s.leaseJobs(r.Context(), nodeID)
-		if err != nil {
+		if err := s.pool.QueryRow(r.Context(), `SELECT metrics_refresh, removing_at IS NOT NULL FROM nodes WHERE id = $1::uuid`, nodeID).Scan(&refresh, &removing); err != nil {
 			writeAPIError(w, err)
 			return
 		}
-		if err := s.pool.QueryRow(r.Context(), `SELECT metrics_refresh FROM nodes WHERE id = $1::uuid`, nodeID).Scan(&refresh); err != nil {
+		if removing {
+			break
+		}
+		jobs, err = s.leaseJobs(r.Context(), nodeID)
+		if err != nil {
 			writeAPIError(w, err)
 			return
 		}
@@ -69,6 +72,20 @@ func (s *Server) heartbeat(w http.ResponseWriter, r *http.Request) {
 			break
 		}
 		s.waker.Wait(nodeID, time.Until(deadline), r.Context())
+	}
+	if removing {
+		if _, err := s.pool.Exec(r.Context(), `DELETE FROM nodes WHERE id = $1::uuid`, nodeID); err != nil {
+			writeAPIError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"node_id":       nodeID,
+			"held_ms":       time.Since(heldStart).Milliseconds(),
+			"heartbeat_sec": doc.HeartbeatSec,
+			"jobs":          []jobInfo{},
+			"decommission":  true,
+		})
+		return
 	}
 	if jobs == nil {
 		jobs = []jobInfo{}

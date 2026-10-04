@@ -65,6 +65,7 @@ export type FleetNode = {
   update_progress: number;
   update_at: string | null;
   core_latest: string;
+  removing: boolean;
   groups: GroupRef[];
   created_at: string;
 };
@@ -113,9 +114,12 @@ export type Monitor = {
   enabled: boolean;
   public_enabled: boolean;
   public_slug: string | null;
+  public_protected: boolean;
   country_codes: string[];
   max_nodes: number;
   success_rules?: SuccessRule[];
+  template_id: string | null;
+  template_name: string;
   groups: GroupRef[];
   last_status: string;
   last_checked_at: string | null;
@@ -177,10 +181,29 @@ export type MonitorSeries = {
 export type MonitorSnapshot = {
   id: string;
   name: string;
+  target_url: string;
+  enabled: boolean;
   last_status: string;
   last_checked_at: string | null;
   uptime_24h: number | null;
-  buckets: UptimeBucket[];
+  avg_ms_24h: number | null;
+  buckets: (UptimeBucket & { avg_ms: number | null })[];
+};
+
+export type CheckHour = {
+  t: string;
+  ok: number;
+  fail: number;
+  avg_ms: number | null;
+};
+
+export type CheckSummary = {
+  total: number;
+  failed: number;
+  avg_ms: number | null;
+  p95_ms: number | null;
+  hours: CheckHour[];
+  fail_spots: { country_code: string; city: string; count: number }[];
 };
 
 export type AgentVersionCount = {
@@ -205,6 +228,8 @@ export type Overview = {
   monitors_total: number;
   monitors_failing: number;
   monitors_ok: number;
+  monitors_paused: number;
+  checks: CheckSummary;
   agent_latest: string;
   agent_versions: AgentVersionCount[];
   agents_on_latest: number;
@@ -223,6 +248,41 @@ export type Overview = {
     http_status: number | null;
     error: string;
   }[];
+};
+
+export type StatusTemplate = {
+  id: string;
+  name: string;
+  success_rules: SuccessRule[];
+  created_at: string;
+};
+
+export type SpotTarget = {
+  url: string;
+  name: string;
+  status: string;
+  run: CheckRun | null;
+};
+
+export type SpotCheck = {
+  id: string;
+  template_name: string;
+  created_at: string;
+  groups: GroupRef[];
+  targets: SpotTarget[];
+  pending: number;
+  ok: number;
+  fail: number;
+};
+
+export type SpotSummary = {
+  id: string;
+  template_name: string;
+  created_at: string;
+  url_count: number;
+  pending: number;
+  ok: number;
+  fail: number;
 };
 
 export type ResultEvent = {

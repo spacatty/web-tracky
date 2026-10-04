@@ -15,21 +15,27 @@ export function SuccessRulesField({
   rules,
   onEnabledChange,
   onChange,
+  required = false,
+  label = "Custom success",
 }: {
   enabled: boolean;
   rules: DraftRule[];
   onEnabledChange: (enabled: boolean) => void;
   onChange: (rules: DraftRule[]) => void;
+  required?: boolean;
+  label?: string;
 }) {
   function update(index: number, patch: Partial<DraftRule>) {
     onChange(rules.map((rule, i) => (i === index ? { ...rule, ...patch } : rule)));
   }
 
+  const active = required || enabled;
+
   return (
     <div className="space-y-2">
       <div className="flex items-center justify-between gap-3">
         <div className="flex items-center gap-1.5">
-          <Label>Custom success</Label>
+          <Label>{label}</Label>
           <Tooltip>
             <TooltipTrigger
               render={
@@ -39,19 +45,21 @@ export function SuccessRulesField({
               <InfoIcon />
             </TooltipTrigger>
             <TooltipContent className="max-w-64 text-left leading-snug">
-              When this is on, a check succeeds only if it matches the rules below. HTTP 200 is not a success unless you add a rule for it. Each rule is a status and a body check. Later rules combine from the top with and or or.
+              A check succeeds only if it matches the rules below. HTTP 200 is not a success unless you add a rule for it. Each rule is a status and a body check. Later rules combine from the top with and or or.
             </TooltipContent>
           </Tooltip>
         </div>
-        <Switch
-          checked={enabled}
-          onCheckedChange={(checked) => {
-            onEnabledChange(checked);
-            if (checked && rules.length === 0) onChange([blankRule()]);
-          }}
-        />
+        {required ? null : (
+          <Switch
+            checked={enabled}
+            onCheckedChange={(checked) => {
+              onEnabledChange(checked);
+              if (checked && rules.length === 0) onChange([blankRule()]);
+            }}
+          />
+        )}
       </div>
-      {enabled ? (
+      {active ? (
         <div className="space-y-2">
           <p className="text-xs text-muted-foreground">Only these rules count. HTTP 200 is not included unless you add it.</p>
           {rules.map((rule, index) => (
@@ -107,9 +115,11 @@ export function SuccessRulesField({
                   onChange={(event) => update(index, { text: event.target.value })}
                 />
               ) : null}
-              <Button type="button" variant="ghost" size="icon-xs" aria-label={`Remove rule ${index + 1}`} onClick={() => onChange(rules.filter((_, i) => i !== index))}>
-                <XIcon />
-              </Button>
+              {required && rules.length <= 1 ? null : (
+                <Button type="button" variant="ghost" size="icon-xs" aria-label={`Remove rule ${index + 1}`} onClick={() => onChange(rules.filter((_, i) => i !== index))}>
+                  <XIcon />
+                </Button>
+              )}
             </div>
           ))}
           <Button

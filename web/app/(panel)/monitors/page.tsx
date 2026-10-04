@@ -1,37 +1,56 @@
 "use client";
 
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import type { ColumnDef } from "@tanstack/react-table";
+import { GlobeIcon, LockIcon } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useMemo, useState } from "react";
-import { toast } from "sonner";
 
 import { DataTable } from "@/components/data-table";
-import { SuccessRulesField } from "@/components/success-rules";
+import { DeleteMonitorDialog, MonitorRowActions, useMonitorActions } from "@/components/monitor-actions";
+import { ImportMonitorsDialog } from "@/components/import-monitors";
+import { MonitorDialog } from "@/components/monitor-form";
 import { StatusPill } from "@/components/status-pill";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Checkbox } from "@/components/ui/checkbox";
-import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
-import { Slider } from "@/components/ui/slider";
-import { Switch } from "@/components/ui/switch";
-import { ApiError, api } from "@/lib/api";
-import { formatAgo, formatInterval, formatUptime, intervalStops } from "@/lib/format";
-import { blankRule, compileRules, type DraftRule } from "@/lib/success";
-import type { Group, Monitor, PublicConfig } from "@/lib/types";
+import { api } from "@/lib/api";
+import { formatAgo, formatInterval, formatUptime } from "@/lib/format";
+import type { Monitor } from "@/lib/types";
 
 export default function MonitorsPage() {
   const router = useRouter();
   const client = useQueryClient();
   const monitors = useQuery({ queryKey: ["monitors"], queryFn: () => api<Monitor[]>("/api/monitors"), refetchInterval: 5000 });
-  const [open, setOpen] = useState(false);
+  const [creating, setCreating] = useState(false);
+  const [importing, setImporting] = useState(false);
+  const [editing, setEditing] = useState<Monitor | null>(null);
+  const [deleting, setDeleting] = useState<Monitor | null>(null);
+  const { toggle, remove } = useMonitorActions();
+  const togglingID = toggle.isPending ? toggle.variables?.id : undefined;
+
   const columns = useMemo<ColumnDef<Monitor>[]>(
     () => [
-      { accessorKey: "name", header: "Monitor", cell: ({ row }) => <div className="font-medium">{row.original.name}</div> },
+      {
+        accessorKey: "name",
+        header: "Monitor",
+        cell: ({ row }) => (
+          <div className="flex items-center gap-2">
+            <span className="font-medium">{row.original.name}</span>
+            {row.original.public_enabled ? (
+              <span title={row.original.public_protected ? "Public page, password protected" : "Public page"} className="text-muted-foreground">
+                {row.original.public_protected ? <LockIcon className="size-3" /> : <GlobeIcon className="size-3" />}
+              </span>
+            ) : null}
+          </div>
+        ),
+      },
       { accessorKey: "target_url", header: "URL", cell: ({ row }) => <span className="font-mono text-xs">{row.original.target_url}</span> },
-      { id: "status", header: "Status", accessorFn: (row) => row.last_status, cell: ({ row }) => <StatusPill status={row.original.last_status} /> },
+      {
+        id: "status",
+        header: "Status",
+        accessorFn: (row) => (row.enabled ? row.last_status : "paused"),
+        cell: ({ row }) => (row.original.enabled ? <StatusPill status={row.original.last_status} /> : <StatusPill status="unknown" label="paused" />),
+      },
       { id: "uptime", header: "24h", accessorFn: (row) => row.uptime_24h ?? -1, cell: ({ row }) => <span className="font-mono text-xs">{formatUptime(row.original.uptime_24h)}</span> },
       { id: "interval", header: "Every", accessorFn: (row) => row.interval_sec, cell: ({ row }) => formatInterval(row.original.interval_sec) },
       {
@@ -46,8 +65,23 @@ export default function MonitorsPage() {
         ),
       },
       { id: "checked", header: "Checked", cell: ({ row }) => <span className="text-xs text-muted-foreground">{formatAgo(row.original.last_checked_at)}</span> },
+      {
+        id: "actions",
+        header: "",
+        enableHiding: false,
+        enableSorting: false,
+        cell: ({ row }) => (
+          <MonitorRowActions
+            monitor={row.original}
+            pausing={togglingID === row.original.id}
+            onToggle={() => toggle.mutate(row.original)}
+            onEdit={() => setEditing(row.original)}
+            onDelete={() => setDeleting(row.original)}
+          />
+        ),
+      },
     ],
-    [],
+    [toggle, togglingID],
   );
 
   return (
@@ -57,7 +91,12 @@ export default function MonitorsPage() {
           <p className="font-mono text-[11px] tracking-[0.16em] text-muted-foreground uppercase">Checks</p>
           <h1 className="mt-1 text-2xl font-semibold tracking-tight">Monitors</h1>
         </div>
-        <Button onClick={() => setOpen(true)}>Add website</Button>
+        <div className="flex gap-2">
+          <Button variant="outline" onClick={() => setImporting(true)}>
+            Import
+          </Button>
+          <Button onClick={() => setCreating(true)}>Add website</Button>
+        </div>
       </div>
       <DataTable
         columns={columns}
@@ -66,126 +105,37 @@ export default function MonitorsPage() {
         onRowClick={(monitor) => router.push(`/monitors/${monitor.id}`)}
         empty="Add a URL to start checking it from your nodes."
       />
-      <CreateMonitor
-        open={open}
-        onOpenChange={setOpen}
-        onCreated={(id) => {
-          client.invalidateQueries({ queryKey: ["monitors"] });
-          router.push(`/monitors/${id}`);
+      <ImportMonitorsDialog
+        open={importing}
+        onOpenChange={setImporting}
+        onImported={() => {
+          void client.invalidateQueries({ queryKey: ["monitors"] });
+          void client.invalidateQueries({ queryKey: ["overview"] });
         }}
       />
+      <MonitorDialog
+        open={creating}
+        onOpenChange={setCreating}
+        onSaved={(monitor) => {
+          void client.invalidateQueries({ queryKey: ["monitors"] });
+          router.push(`/monitors/${monitor.id}`);
+        }}
+      />
+      <MonitorDialog
+        open={Boolean(editing)}
+        onOpenChange={(open) => !open && setEditing(null)}
+        monitor={editing}
+        onSaved={(monitor) => {
+          void client.invalidateQueries({ queryKey: ["monitors"] });
+          void client.invalidateQueries({ queryKey: ["monitor", monitor.id] });
+        }}
+      />
+      <DeleteMonitorDialog
+        monitor={deleting}
+        pending={remove.isPending}
+        onCancel={() => setDeleting(null)}
+        onConfirm={(monitor) => remove.mutate(monitor, { onSuccess: () => setDeleting(null) })}
+      />
     </div>
-  );
-}
-
-function CreateMonitor({ open, onOpenChange, onCreated }: { open: boolean; onOpenChange: (open: boolean) => void; onCreated: (id: string) => void }) {
-  const config = useQuery({ queryKey: ["config"], queryFn: () => api<PublicConfig>("/api/config") });
-  const groups = useQuery({ queryKey: ["groups"], queryFn: () => api<Group[]>("/api/groups"), enabled: open });
-  const stops = intervalStops(config.data?.min_interval_sec ?? 30);
-  const [name, setName] = useState("");
-  const [url, setUrl] = useState("https://");
-  const [index, setIndex] = useState(1);
-  const [maxNodes, setMaxNodes] = useState(20);
-  const [countries, setCountries] = useState("");
-  const [enabled, setEnabled] = useState(true);
-  const [share, setShare] = useState(false);
-  const [groupIDs, setGroupIDs] = useState<string[]>([]);
-  const [customSuccess, setCustomSuccess] = useState(false);
-  const [successRules, setSuccessRules] = useState<DraftRule[]>([blankRule()]);
-  const save = useMutation({
-    mutationFn: () => {
-      const compiled = compileRules(customSuccess, successRules);
-      if (!compiled.ok) return Promise.reject(new Error(compiled.error));
-      return api<Monitor>("/api/monitors", {
-        method: "POST",
-        body: JSON.stringify({
-          name,
-          target_url: url,
-          interval_sec: stops[Math.min(index, stops.length - 1)],
-          enabled,
-          public_enabled: share,
-          country_codes: countries.split(/[,\s]+/).filter(Boolean),
-          max_nodes: maxNodes,
-          group_ids: groupIDs,
-          success_rules: compiled.rules,
-        }),
-      });
-    },
-    onSuccess: (monitor) => {
-      toast.success("Monitor created");
-      onOpenChange(false);
-      onCreated(monitor.id);
-    },
-    onError: (error) => toast.error(error instanceof ApiError ? error.message : error instanceof Error ? error.message : "Could not create monitor"),
-  });
-
-  return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-h-[calc(100vh-2rem)] overflow-y-auto sm:max-w-xl">
-        <DialogHeader>
-          <DialogTitle>Track a website</DialogTitle>
-        </DialogHeader>
-        <form
-          className="space-y-3"
-          onSubmit={(event) => {
-            event.preventDefault();
-            save.mutate();
-          }}
-        >
-          <div className="space-y-1.5">
-            <Label>Name</Label>
-            <Input value={name} onChange={(event) => setName(event.target.value)} required />
-          </div>
-          <div className="space-y-1.5">
-            <Label>URL</Label>
-            <Input value={url} onChange={(event) => setUrl(event.target.value)} required />
-          </div>
-          <div className="space-y-2">
-            <div className="flex items-center justify-between text-sm">
-              <Label>Interval</Label>
-              <span className="font-mono text-xs">{formatInterval(stops[Math.min(index, stops.length - 1)] ?? 60)}</span>
-            </div>
-            <Slider min={0} max={Math.max(stops.length - 1, 1)} step={1} value={[Math.min(index, stops.length - 1)]} onValueChange={(value) => setIndex(Array.isArray(value) ? value[0] : value)} />
-          </div>
-          <div className="grid grid-cols-2 gap-3">
-            <div className="space-y-1.5">
-              <Label>Max nodes</Label>
-              <Input type="number" min={1} max={100} value={maxNodes} onChange={(event) => setMaxNodes(Number(event.target.value))} />
-            </div>
-            <div className="space-y-1.5">
-              <Label>Countries</Label>
-              <Input value={countries} onChange={(event) => setCountries(event.target.value)} placeholder="DE, US" />
-            </div>
-          </div>
-          <div className="space-y-2">
-            <Label>Pool</Label>
-            {(groups.data ?? []).map((group) => (
-              <Label key={group.id} className="font-normal">
-                <Checkbox
-                  checked={groupIDs.includes(group.id)}
-                  onCheckedChange={(checked) =>
-                    setGroupIDs((current) => (checked ? [...current, group.id] : current.filter((id) => id !== group.id)))
-                  }
-                />
-                {group.name}
-                <span className="text-xs text-muted-foreground">{group.visibility}</span>
-              </Label>
-            ))}
-          </div>
-          <SuccessRulesField enabled={customSuccess} rules={successRules} onEnabledChange={setCustomSuccess} onChange={setSuccessRules} />
-          <div className="flex items-center justify-between">
-            <Label>Enabled</Label>
-            <Switch checked={enabled} onCheckedChange={setEnabled} />
-          </div>
-          <div className="flex items-center justify-between">
-            <Label>Public status page</Label>
-            <Switch checked={share} onCheckedChange={setShare} />
-          </div>
-          <DialogFooter>
-            <Button type="submit" disabled={save.isPending}>Create</Button>
-          </DialogFooter>
-        </form>
-      </DialogContent>
-    </Dialog>
   );
 }

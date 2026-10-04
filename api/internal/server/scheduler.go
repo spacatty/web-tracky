@@ -17,6 +17,7 @@ func (s *Server) RunScheduler() {
 	for range ticker.C {
 		s.scheduleOnce()
 		s.expireOnce()
+		s.sweepRemovedNodes()
 	}
 }
 
@@ -36,6 +37,9 @@ func (s *Server) retain() {
 	}
 	if _, err := s.pool.Exec(ctx, `DELETE FROM check_runs WHERE started_at < now() - make_interval(days => $1)`, s.cfg.RetentionDays); err != nil {
 		log.Printf("retention runs: %v", err)
+	}
+	if _, err := s.pool.Exec(ctx, `DELETE FROM spot_checks WHERE created_at < now() - make_interval(days => $1)`, s.cfg.RetentionDays); err != nil {
+		log.Printf("retention spot checks: %v", err)
 	}
 }
 
@@ -57,7 +61,7 @@ func (s *Server) scheduleOnce() {
 	}
 	rows, err := tx.Query(ctx, `
 		SELECT id::text FROM monitors
-		WHERE enabled AND next_run_at <= now()
+		WHERE enabled AND kind = 'monitor' AND next_run_at <= now()
 		ORDER BY next_run_at
 		LIMIT 50
 		FOR UPDATE SKIP LOCKED`)
@@ -167,6 +171,7 @@ func (s *Server) insertRun(ctx context.Context, tx pgx.Tx, monitorID, trigger st
 			JOIN node_groups ng ON ng.node_id = n.id
 			JOIN monitor_groups mg ON mg.group_id = ng.group_id AND mg.monitor_id = $1::uuid
 			WHERE n.last_seen_at IS NOT NULL
+			  AND n.removing_at IS NULL
 			  AND n.last_seen_at > now() - make_interval(secs => $2)
 			  AND (COALESCE(cardinality($3::text[]), 0) = 0 OR n.country_code = ANY($3::text[]))
 			ORDER BY n.id

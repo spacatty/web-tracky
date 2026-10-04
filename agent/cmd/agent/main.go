@@ -74,6 +74,7 @@ type heartbeatResponse struct {
 	Pack           json.RawMessage `json:"pack"`
 	Jobs           []interp.Job    `json:"jobs"`
 	RefreshMetrics bool            `json:"refresh_metrics"`
+	Decommission   bool            `json:"decommission"`
 }
 
 func (a *app) loop() {
@@ -85,6 +86,9 @@ func (a *app) loop() {
 			continue
 		}
 		a.rtt = rtt
+		if resp.Decommission {
+			a.decommission()
+		}
 		if resp.RefreshMetrics {
 			a.forceSpeed = true
 		}

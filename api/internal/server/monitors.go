@@ -2,12 +2,18 @@ package server
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"golang.org/x/crypto/bcrypt"
 
 	"tracky/api/internal/pack"
 )
@@ -20,9 +26,12 @@ type monitorRow struct {
 	Enabled       bool               `json:"enabled"`
 	PublicEnabled bool               `json:"public_enabled"`
 	PublicSlug    *string            `json:"public_slug"`
+	Protected     bool               `json:"public_protected"`
 	CountryCodes  []string           `json:"country_codes"`
 	MaxNodes      int                `json:"max_nodes"`
 	SuccessRules  []pack.SuccessRule `json:"success_rules"`
+	TemplateID    *string            `json:"template_id"`
+	TemplateName  string             `json:"template_name"`
 	Groups        []groupRef         `json:"groups"`
 	LastStatus    string             `json:"last_status"`
 	LastCheckedAt *time.Time         `json:"last_checked_at"`
@@ -80,7 +89,7 @@ type monitorDetail struct {
 func (s *Server) listMonitors(w http.ResponseWriter, r *http.Request) {
 	u := currentUser(r.Context())
 	rows, err := s.pool.Query(r.Context(), monitorSelectSQL+`
-		WHERE $2::bool OR m.owner_id = $1::uuid
+		WHERE m.kind = 'monitor' AND ($2::bool OR m.owner_id = $1::uuid)
 		ORDER BY m.name`, u.ID, u.Admin())
 	if err != nil {
 		writeAPIError(w, err)
@@ -106,15 +115,17 @@ func (s *Server) listMonitors(w http.ResponseWriter, r *http.Request) {
 func (s *Server) createMonitor(w http.ResponseWriter, r *http.Request) {
 	u := currentUser(r.Context())
 	var body struct {
-		Name          string             `json:"name"`
-		TargetURL     string             `json:"target_url"`
-		IntervalSec   int                `json:"interval_sec"`
-		Enabled       *bool              `json:"enabled"`
-		PublicEnabled bool               `json:"public_enabled"`
-		CountryCodes  []string           `json:"country_codes"`
-		MaxNodes      int                `json:"max_nodes"`
-		GroupIDs      []string           `json:"group_ids"`
-		SuccessRules  []pack.SuccessRule `json:"success_rules"`
+		Name           string             `json:"name"`
+		TargetURL      string             `json:"target_url"`
+		IntervalSec    int                `json:"interval_sec"`
+		Enabled        *bool              `json:"enabled"`
+		PublicEnabled  bool               `json:"public_enabled"`
+		PublicPassword string             `json:"public_password"`
+		CountryCodes   []string           `json:"country_codes"`
+		MaxNodes       int                `json:"max_nodes"`
+		GroupIDs       []string           `json:"group_ids"`
+		SuccessRules   []pack.SuccessRule `json:"success_rules"`
+		TemplateID     *string            `json:"template_id"`
 	}
 	if err := decodeJSON(r, &body); err != nil {
 		writeErr(w, http.StatusBadRequest, "invalid json")
@@ -125,9 +136,14 @@ func (s *Server) createMonitor(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, err)
 		return
 	}
-	rules, err := pack.NormalizeSuccessRules(body.SuccessRules)
+	passwordHash, err := hashStatusPassword(body.PublicPassword)
 	if err != nil {
-		writeAPIError(w, badRequest(err.Error()))
+		writeAPIError(w, err)
+		return
+	}
+	rules, templateID, err := s.resolveTemplate(r.Context(), body.TemplateID, body.SuccessRules)
+	if err != nil {
+		writeAPIError(w, err)
 		return
 	}
 	rulesJSON, err := json.Marshal(rules)
@@ -157,12 +173,16 @@ func (s *Server) createMonitor(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer tx.Rollback(r.Context())
+	var templateArg any
+	if templateID != nil {
+		templateArg = *templateID
+	}
 	var id string
 	err = tx.QueryRow(r.Context(), `
-		INSERT INTO monitors (owner_id, name, target_url, interval_sec, enabled, public_enabled, public_slug, country_codes, max_nodes, success_rules, next_run_at)
-		VALUES ($1::uuid, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, now())
+		INSERT INTO monitors (owner_id, name, target_url, interval_sec, enabled, public_enabled, public_slug, public_password_hash, country_codes, max_nodes, success_rules, next_run_at, template_id)
+		VALUES ($1::uuid, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::jsonb, now(), $12::uuid)
 		RETURNING id::text`,
-		u.ID, name, target, body.IntervalSec, enabled, body.PublicEnabled, slug, countries, body.MaxNodes, string(rulesJSON)).Scan(&id)
+		u.ID, name, target, body.IntervalSec, enabled, body.PublicEnabled, slug, passwordHash, countries, body.MaxNodes, string(rulesJSON), templateArg).Scan(&id)
 	if err != nil {
 		writeAPIError(w, err)
 		return
@@ -196,15 +216,17 @@ func (s *Server) patchMonitor(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body struct {
-		Name          *string             `json:"name"`
-		TargetURL     *string             `json:"target_url"`
-		IntervalSec   *int                `json:"interval_sec"`
-		Enabled       *bool               `json:"enabled"`
-		PublicEnabled *bool               `json:"public_enabled"`
-		CountryCodes  *[]string           `json:"country_codes"`
-		MaxNodes      *int                `json:"max_nodes"`
-		GroupIDs      *[]string           `json:"group_ids"`
-		SuccessRules  *[]pack.SuccessRule `json:"success_rules"`
+		Name           *string             `json:"name"`
+		TargetURL      *string             `json:"target_url"`
+		IntervalSec    *int                `json:"interval_sec"`
+		Enabled        *bool               `json:"enabled"`
+		PublicEnabled  *bool               `json:"public_enabled"`
+		PublicPassword *string             `json:"public_password"`
+		CountryCodes   *[]string           `json:"country_codes"`
+		MaxNodes       *int                `json:"max_nodes"`
+		GroupIDs       *[]string           `json:"group_ids"`
+		SuccessRules   *[]pack.SuccessRule `json:"success_rules"`
+		TemplateID     *string             `json:"template_id"`
 	}
 	if err := decodeJSON(r, &body); err != nil {
 		writeErr(w, http.StatusBadRequest, "invalid json")
@@ -249,7 +271,34 @@ func (s *Server) patchMonitor(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	rules := current.SuccessRules
-	if body.SuccessRules != nil {
+	templateID := current.TemplateID
+	if body.TemplateID != nil {
+		trimmed := strings.TrimSpace(*body.TemplateID)
+		if trimmed == "" {
+			templateID = nil
+			incoming := current.SuccessRules
+			if body.SuccessRules != nil {
+				incoming = *body.SuccessRules
+			}
+			rules, err = pack.NormalizeSuccessRules(incoming)
+			if err != nil {
+				writeAPIError(w, badRequest(err.Error()))
+				return
+			}
+		} else {
+			tpl, err := s.loadTemplate(r.Context(), trimmed)
+			if err != nil {
+				if errors.Is(err, errNotFound) {
+					writeAPIError(w, badRequest("unknown status preset"))
+					return
+				}
+				writeAPIError(w, err)
+				return
+			}
+			rules = tpl.SuccessRules
+			templateID = &tpl.ID
+		}
+	} else if body.SuccessRules != nil {
 		rules, err = pack.NormalizeSuccessRules(*body.SuccessRules)
 		if err != nil {
 			writeAPIError(w, badRequest(err.Error()))
@@ -288,6 +337,23 @@ func (s *Server) patchMonitor(w http.ResponseWriter, r *http.Request) {
 	args := []any{id, name, target, interval, enabled, publicEnabled, slug, countries, maxNodes, string(rulesJSON)}
 	if body.Enabled != nil && enabled && !current.Enabled {
 		q += `, next_run_at = now()`
+	}
+	if body.PublicPassword != nil {
+		hash, err := hashStatusPassword(*body.PublicPassword)
+		if err != nil {
+			writeAPIError(w, err)
+			return
+		}
+		args = append(args, hash)
+		q += fmt.Sprintf(`, public_password_hash = $%d`, len(args))
+	}
+	if body.TemplateID != nil {
+		var arg any
+		if templateID != nil {
+			arg = *templateID
+		}
+		args = append(args, arg)
+		q += fmt.Sprintf(`, template_id = $%d::uuid`, len(args))
 	}
 	q += ` WHERE id = $1::uuid`
 	if _, err := tx.Exec(r.Context(), q, args...); err != nil {
@@ -345,12 +411,82 @@ func (s *Server) checkNow(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, run)
 }
 
-func (s *Server) publicStatus(w http.ResponseWriter, r *http.Request) {
-	var id string
+// publicMonitor resolves a shared slug and enforces the optional page password.
+// Unlocked visitors carry an HMAC of the slug and the current hash, so changing
+// or clearing the password invalidates every previously issued token.
+func (s *Server) publicMonitor(w http.ResponseWriter, r *http.Request) (string, bool) {
+	slug := r.PathValue("slug")
+	var id, hash string
 	err := s.pool.QueryRow(r.Context(), `
-		SELECT id::text FROM monitors WHERE public_slug = $1 AND public_enabled`, r.PathValue("slug")).Scan(&id)
+		SELECT id::text, public_password_hash FROM monitors WHERE public_slug = $1 AND public_enabled`, slug).Scan(&id, &hash)
 	if err != nil {
 		writeAPIError(w, errNotFound)
+		return "", false
+	}
+	if hash != "" {
+		token := r.Header.Get("X-Status-Token")
+		if token == "" || !hmac.Equal([]byte(token), []byte(s.statusToken(slug, hash))) {
+			writeErr(w, http.StatusUnauthorized, "password required")
+			return "", false
+		}
+	}
+	return id, true
+}
+
+func (s *Server) statusToken(slug, hash string) string {
+	mac := hmac.New(sha256.New, []byte(s.cfg.SessionSecret))
+	mac.Write([]byte("status:" + slug + ":" + hash))
+	return hex.EncodeToString(mac.Sum(nil))
+}
+
+func (s *Server) unlockStatus(w http.ResponseWriter, r *http.Request) {
+	slug := r.PathValue("slug")
+	if !s.statusHits.allow(clientIP(r)+"|"+slug, 10, time.Minute) {
+		writeErr(w, http.StatusTooManyRequests, "too many attempts, wait a minute")
+		return
+	}
+	var body struct {
+		Password string `json:"password"`
+	}
+	if err := decodeJSON(r, &body); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	var hash string
+	err := s.pool.QueryRow(r.Context(), `
+		SELECT public_password_hash FROM monitors WHERE public_slug = $1 AND public_enabled`, slug).Scan(&hash)
+	if err != nil {
+		writeAPIError(w, errNotFound)
+		return
+	}
+	if hash == "" {
+		writeJSON(w, http.StatusOK, map[string]string{"token": ""})
+		return
+	}
+	if bcrypt.CompareHashAndPassword([]byte(hash), []byte(body.Password)) != nil {
+		writeErr(w, http.StatusUnauthorized, "wrong password")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"token": s.statusToken(slug, hash)})
+}
+
+func hashStatusPassword(password string) (string, error) {
+	if password == "" {
+		return "", nil
+	}
+	if len(password) < 4 || len(password) > 200 {
+		return "", badRequest("status page password must be 4-200 characters")
+	}
+	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+	if err != nil {
+		return "", err
+	}
+	return string(hash), nil
+}
+
+func (s *Server) publicStatus(w http.ResponseWriter, r *http.Request) {
+	id, ok := s.publicMonitor(w, r)
+	if !ok {
 		return
 	}
 	from, to, err := chartWindow(r, 24*time.Hour)
@@ -368,11 +504,8 @@ func (s *Server) publicStatus(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) publicSeries(w http.ResponseWriter, r *http.Request) {
-	var id string
-	err := s.pool.QueryRow(r.Context(), `
-		SELECT id::text FROM monitors WHERE public_slug = $1 AND public_enabled`, r.PathValue("slug")).Scan(&id)
-	if err != nil {
-		writeAPIError(w, errNotFound)
+	id, ok := s.publicMonitor(w, r)
+	if !ok {
 		return
 	}
 	s.writeSeries(w, r, id)
@@ -565,13 +698,16 @@ func (s *Server) loadMonitor(ctx context.Context, id string) (monitorRow, error)
 }
 
 func (s *Server) monitorVisible(ctx context.Context, id string, u User) error {
-	var owner string
-	err := s.pool.QueryRow(ctx, `SELECT owner_id::text FROM monitors WHERE id = $1::uuid`, id).Scan(&owner)
+	var owner, kind string
+	err := s.pool.QueryRow(ctx, `SELECT owner_id::text, kind FROM monitors WHERE id = $1::uuid`, id).Scan(&owner, &kind)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
+		if errors.Is(err, pgx.ErrNoRows) || isInvalidText(err) {
 			return errNotFound
 		}
 		return err
+	}
+	if kind != "monitor" {
+		return errNotFound
 	}
 	if u.Admin() || owner == u.ID {
 		return nil
@@ -614,9 +750,12 @@ SELECT
 	m.enabled,
 	m.public_enabled,
 	m.public_slug,
+	m.public_password_hash <> '',
 	m.country_codes,
 	m.max_nodes,
 	m.success_rules,
+	m.template_id::text,
+	COALESCE(st.name, ''),
 	m.created_at,
 	u.email,
 	COALESCE((
@@ -630,6 +769,7 @@ SELECT
 	up.uptime
 FROM monitors m
 JOIN users u ON u.id = m.owner_id
+LEFT JOIN status_templates st ON st.id = m.template_id
 LEFT JOIN LATERAL (
 	SELECT
 		CASE
@@ -657,8 +797,8 @@ func scanMonitor(row interface{ Scan(...any) error }) (monitorRow, error) {
 	var m monitorRow
 	var rawGroups, rawRules []byte
 	err := row.Scan(
-		&m.ID, &m.Name, &m.TargetURL, &m.IntervalSec, &m.Enabled, &m.PublicEnabled, &m.PublicSlug,
-		&m.CountryCodes, &m.MaxNodes, &rawRules, &m.CreatedAt, &m.OwnerEmail, &rawGroups, &m.LastStatus, &m.LastCheckedAt, &m.Uptime24h,
+		&m.ID, &m.Name, &m.TargetURL, &m.IntervalSec, &m.Enabled, &m.PublicEnabled, &m.PublicSlug, &m.Protected,
+		&m.CountryCodes, &m.MaxNodes, &rawRules, &m.TemplateID, &m.TemplateName, &m.CreatedAt, &m.OwnerEmail, &rawGroups, &m.LastStatus, &m.LastCheckedAt, &m.Uptime24h,
 	)
 	if err != nil {
 		return m, err

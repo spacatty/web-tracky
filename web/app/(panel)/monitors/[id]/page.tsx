@@ -1,27 +1,32 @@
 "use client";
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useParams } from "next/navigation";
+import { CopyIcon, GlobeIcon, LockIcon, PauseIcon, PencilIcon, PlayIcon, Trash2Icon } from "lucide-react";
+import { useParams, useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
 
+import { DeleteMonitorDialog, copyShare, useMonitorActions } from "@/components/monitor-actions";
+import { MonitorDialog } from "@/components/monitor-form";
 import { MonitorPanel } from "@/components/monitor-panel";
-import { SuccessRulesField } from "@/components/success-rules";
 import { StatusPill } from "@/components/status-pill";
 import { Button } from "@/components/ui/button";
-import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Skeleton } from "@/components/ui/skeleton";
-import { ApiError, api } from "@/lib/api";
+import { api, errorMessage } from "@/lib/api";
 import { formatInterval } from "@/lib/format";
-import { blankRule, compileRules, describeSuccess, toDraft, type DraftRule } from "@/lib/success";
+import { successLabel } from "@/lib/success";
 import type { CheckRun, MonitorDetail, ResultEvent } from "@/lib/types";
 
 export default function MonitorDetailPage() {
   const params = useParams<{ id: string }>();
   const id = params.id;
+  const router = useRouter();
   const client = useQueryClient();
   const query = useQuery({ queryKey: ["monitor", id], queryFn: () => api<MonitorDetail>(`/api/monitors/${id}`) });
   const [run, setRun] = useState<CheckRun | null>(null);
+  const [editing, setEditing] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const { toggle, remove } = useMonitorActions();
 
   useEffect(() => {
     if (!query.data?.latest_run) return;
@@ -51,30 +56,7 @@ export default function MonitorDetailPage() {
       setRun(next);
       if (next.results.length === 0) toast.message("No online agents in this pool");
     },
-    onError: (error) => toast.error(error instanceof ApiError ? error.message : "Check failed"),
-  });
-  const remove = useMutation({
-    mutationFn: () => api(`/api/monitors/${id}`, { method: "DELETE" }),
-    onSuccess: () => {
-      window.location.href = "/monitors";
-    },
-    onError: (error) => toast.error(error instanceof ApiError ? error.message : "Could not delete"),
-  });
-  const [rulesOpen, setRulesOpen] = useState(false);
-  const [customSuccess, setCustomSuccess] = useState(false);
-  const [successRules, setSuccessRules] = useState<DraftRule[]>([blankRule()]);
-  const saveRules = useMutation({
-    mutationFn: () => {
-      const compiled = compileRules(customSuccess, successRules);
-      if (!compiled.ok) return Promise.reject(new Error(compiled.error));
-      return api(`/api/monitors/${id}`, { method: "PATCH", body: JSON.stringify({ success_rules: compiled.rules }) });
-    },
-    onSuccess: () => {
-      toast.success("Success rules updated");
-      setRulesOpen(false);
-      client.invalidateQueries({ queryKey: ["monitor", id] });
-    },
-    onError: (error) => toast.error(error instanceof ApiError ? error.message : error instanceof Error ? error.message : "Could not update rules"),
+    onError: (error) => toast.error(errorMessage(error, "Check failed")),
   });
 
   if (!query.data) {
@@ -86,9 +68,7 @@ export default function MonitorDetailPage() {
     );
   }
   const monitor = query.data;
-  const appUrl = typeof window === "undefined" ? "" : window.location.origin;
-
-  const shareHref = monitor.public_enabled && monitor.public_slug ? `${appUrl}/status/${monitor.public_slug}` : null;
+  const shareHref = monitor.public_enabled && monitor.public_slug ? `${window.location.origin}/status/${monitor.public_slug}` : null;
 
   return (
     <div className="space-y-4">
@@ -96,53 +76,64 @@ export default function MonitorDetailPage() {
         <div className="min-w-0">
           <div className="flex items-center gap-2">
             <h1 className="text-xl font-semibold tracking-tight">{monitor.name}</h1>
-            <StatusPill status={monitor.last_status} />
+            {monitor.enabled ? <StatusPill status={monitor.last_status} /> : <StatusPill status="unknown" label="paused" />}
           </div>
           <a href={monitor.target_url} className="font-mono text-xs text-muted-foreground hover:text-foreground">{monitor.target_url}</a>
           <p className="mt-1 text-[11px] text-muted-foreground">
             Every {formatInterval(monitor.interval_sec)} · up to {monitor.max_nodes} nodes
-            {monitor.country_codes.length ? ` · ${monitor.country_codes.join(", ")}` : ""}
-            {" · "}
-            <Button
-              type="button"
-              variant="link"
-              className="h-auto px-0 text-[11px] font-normal text-muted-foreground"
-              onClick={() => {
-                const next = toDraft(monitor.success_rules);
-                setCustomSuccess(next.enabled);
-                setSuccessRules(next.rules);
-                setRulesOpen(true);
-              }}
-            >
-              Success {describeSuccess(monitor.success_rules)}
-            </Button>
+            {monitor.country_codes.length ? ` · ${monitor.country_codes.join(", ")}` : ""} · Success {successLabel(monitor.template_name, monitor.success_rules)}
           </p>
+          <div className="mt-2 flex flex-wrap items-center gap-2 text-[11px] text-muted-foreground">
+            {shareHref ? (
+              <>
+                <span className="inline-flex items-center gap-1">
+                  {monitor.public_protected ? <LockIcon className="size-3" /> : <GlobeIcon className="size-3" />}
+                  {monitor.public_protected ? "Public page, password protected" : "Public page"}
+                </span>
+                <Button variant="outline" size="xs" onClick={() => copyShare(monitor)}>
+                  <CopyIcon />
+                  Copy link
+                </Button>
+              </>
+            ) : (
+              <span>Status page off</span>
+            )}
+            <Button variant="link" size="xs" className="h-auto px-0 text-[11px]" onClick={() => setEditing(true)}>
+              {shareHref ? "Sharing settings" : "Enable sharing"}
+            </Button>
+          </div>
         </div>
-        <div className="flex gap-2">
+        <div className="flex flex-wrap gap-2">
           <Button onClick={() => check.mutate()} disabled={check.isPending}>Check now</Button>
-          <Button variant="outline" onClick={() => remove.mutate()}>Delete</Button>
+          <Button variant="outline" disabled={toggle.isPending} onClick={() => toggle.mutate(monitor)}>
+            {monitor.enabled ? <PauseIcon /> : <PlayIcon />}
+            {monitor.enabled ? "Pause" : "Resume"}
+          </Button>
+          <Button variant="outline" onClick={() => setEditing(true)}>
+            <PencilIcon />
+            Edit
+          </Button>
+          <Button variant="destructive" size="icon" title="Delete" onClick={() => setDeleting(true)}>
+            <Trash2Icon />
+          </Button>
         </div>
       </div>
       <MonitorPanel monitor={monitor} run={run} shareHref={shareHref} seriesPath={`/api/monitors/${id}/series`} />
-      <Dialog open={rulesOpen} onOpenChange={setRulesOpen}>
-        <DialogContent className="max-h-[calc(100vh-2rem)] overflow-y-auto sm:max-w-xl">
-          <DialogHeader>
-            <DialogTitle>Success rules</DialogTitle>
-          </DialogHeader>
-          <form
-            className="space-y-3"
-            onSubmit={(event) => {
-              event.preventDefault();
-              saveRules.mutate();
-            }}
-          >
-            <SuccessRulesField enabled={customSuccess} rules={successRules} onEnabledChange={setCustomSuccess} onChange={setSuccessRules} />
-            <DialogFooter>
-              <Button type="submit" disabled={saveRules.isPending}>Save</Button>
-            </DialogFooter>
-          </form>
-        </DialogContent>
-      </Dialog>
+      <MonitorDialog
+        open={editing}
+        onOpenChange={setEditing}
+        monitor={monitor}
+        onSaved={() => {
+          void client.invalidateQueries({ queryKey: ["monitor", id] });
+          void client.invalidateQueries({ queryKey: ["monitors"] });
+        }}
+      />
+      <DeleteMonitorDialog
+        monitor={deleting ? monitor : null}
+        pending={remove.isPending}
+        onCancel={() => setDeleting(false)}
+        onConfirm={(target) => remove.mutate(target, { onSuccess: () => router.push("/monitors") })}
+      />
     </div>
   );
 }

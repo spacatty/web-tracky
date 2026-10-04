@@ -19,16 +19,18 @@ export function MonitorPanel({
   run,
   shareHref,
   seriesPath,
+  headers,
 }: {
   monitor: MonitorDetail;
   run: CheckRun | null;
   shareHref?: string | null;
   seriesPath: string;
+  headers?: Record<string, string>;
 }) {
   const range = useChartRange();
   const series = useQuery({
-    queryKey: ["monitor-series", seriesPath, range.preset, range.preset === "custom" ? range.from.toISOString() : "", range.preset === "custom" ? range.to.toISOString() : ""],
-    queryFn: () => api<MonitorSeries>(`${seriesPath}?${rangeQuery(range.window)}`),
+    queryKey: ["monitor-series", seriesPath, headers, range.preset, range.preset === "custom" ? range.from.toISOString() : "", range.preset === "custom" ? range.to.toISOString() : ""],
+    queryFn: () => api<MonitorSeries>(`${seriesPath}?${rangeQuery(range.window)}`, { headers }),
     placeholderData: keepPreviousData,
     refetchInterval: range.preset === "custom" ? false : 15000,
   });

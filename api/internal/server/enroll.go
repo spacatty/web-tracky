@@ -24,15 +24,7 @@ type tokenRow struct {
 }
 
 func (s *Server) listTokens(w http.ResponseWriter, r *http.Request) {
-	rows, err := s.pool.Query(r.Context(), `
-		SELECT t.id::text, t.name, t.expires_at, t.max_uses, t.uses, t.revoked, t.created_at,
-			COALESCE((
-				SELECT json_agg(json_build_object('id', g.id::text, 'name', g.name, 'visibility', g.visibility) ORDER BY g.name)
-				FROM enroll_token_groups eg
-				JOIN groups g ON g.id = eg.group_id
-				WHERE eg.token_id = t.id
-			), '[]'::json)
-		FROM enroll_tokens t
+	rows, err := s.pool.Query(r.Context(), tokenSelectSQL+`
 		ORDER BY t.created_at DESC`)
 	if err != nil {
 		writeAPIError(w, err)
@@ -114,10 +106,10 @@ func (s *Server) createToken(w http.ResponseWriter, r *http.Request) {
 	var id string
 	var created time.Time
 	err = tx.QueryRow(r.Context(), `
-		INSERT INTO enroll_tokens (name, token_hash, created_by, expires_at, max_uses)
-		VALUES ($1, $2, $3::uuid, $4, $5)
+		INSERT INTO enroll_tokens (name, token_hash, token_plain, created_by, expires_at, max_uses)
+		VALUES ($1, $2, $3, $4::uuid, $5, $6)
 		RETURNING id::text, created_at`,
-		name, hash, currentUser(r.Context()).ID, expires, body.MaxUses).Scan(&id, &created)
+		name, hash, plain, currentUser(r.Context()).ID, expires, body.MaxUses).Scan(&id, &created)
 	if err != nil {
 		writeAPIError(w, err)
 		return
@@ -132,15 +124,7 @@ func (s *Server) createToken(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, err)
 		return
 	}
-	rows, err := s.pool.Query(r.Context(), `
-		SELECT t.id::text, t.name, t.expires_at, t.max_uses, t.uses, t.revoked, t.created_at,
-			COALESCE((
-				SELECT json_agg(json_build_object('id', g.id::text, 'name', g.name, 'visibility', g.visibility) ORDER BY g.name)
-				FROM enroll_token_groups eg
-				JOIN groups g ON g.id = eg.group_id
-				WHERE eg.token_id = t.id
-			), '[]'::json)
-		FROM enroll_tokens t WHERE t.id = $1::uuid`, id)
+	rows, err := s.pool.Query(r.Context(), tokenSelectSQL+` WHERE t.id = $1::uuid`, id)
 	if err != nil {
 		writeAPIError(w, err)
 		return
@@ -155,9 +139,20 @@ func (s *Server) createToken(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, err)
 		return
 	}
-	row.Token = plain
 	writeJSON(w, http.StatusCreated, row)
 }
+
+// Enroll tokens are install-time credentials that only mint node secrets; the
+// plaintext is kept so admins can copy the install command again later.
+const tokenSelectSQL = `
+SELECT t.id::text, t.name, t.token_plain, t.expires_at, t.max_uses, t.uses, t.revoked, t.created_at,
+	COALESCE((
+		SELECT json_agg(json_build_object('id', g.id::text, 'name', g.name, 'visibility', g.visibility) ORDER BY g.name)
+		FROM enroll_token_groups eg
+		JOIN groups g ON g.id = eg.group_id
+		WHERE eg.token_id = t.id
+	), '[]'::json)
+FROM enroll_tokens t`
 
 func (s *Server) revokeToken(w http.ResponseWriter, r *http.Request) {
 	tag, err := s.pool.Exec(r.Context(), `UPDATE enroll_tokens SET revoked = true WHERE id = $1::uuid`, r.PathValue("id"))
@@ -175,7 +170,7 @@ func (s *Server) revokeToken(w http.ResponseWriter, r *http.Request) {
 func scanToken(row interface{ Scan(...any) error }) (tokenRow, error) {
 	var t tokenRow
 	var raw []byte
-	err := row.Scan(&t.ID, &t.Name, &t.ExpiresAt, &t.MaxUses, &t.Uses, &t.Revoked, &t.CreatedAt, &raw)
+	err := row.Scan(&t.ID, &t.Name, &t.Token, &t.ExpiresAt, &t.MaxUses, &t.Uses, &t.Revoked, &t.CreatedAt, &raw)
 	if err != nil {
 		return t, err
 	}

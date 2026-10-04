@@ -2,9 +2,11 @@
 
 import {
   ActivityIcon,
+  BookmarkIcon,
   ChevronsUpDownIcon,
   KeyRoundIcon,
   LayersIcon,
+  ListChecksIcon,
   LayoutDashboardIcon,
   LogOutIcon,
   RadarIcon,
@@ -46,7 +48,11 @@ import type { Me } from "@/lib/types";
 
 type NavItem = { href: string; label: string; icon: LucideIcon };
 
-const watch: NavItem[] = [{ href: "/monitors", label: "Monitors", icon: ActivityIcon }];
+const watch: NavItem[] = [
+  { href: "/monitors", label: "Monitors", icon: ActivityIcon },
+  { href: "/check", label: "One-off check", icon: ListChecksIcon },
+  { href: "/presets", label: "Presets", icon: BookmarkIcon },
+];
 
 const fleet: NavItem[] = [
   { href: "/", label: "Overview", icon: LayoutDashboardIcon },

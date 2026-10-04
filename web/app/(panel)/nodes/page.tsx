@@ -2,7 +2,7 @@
 
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { ColumnDef } from "@tanstack/react-table";
-import { RefreshCwIcon } from "lucide-react";
+import { RefreshCwIcon, Trash2Icon } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Area, AreaChart, CartesianGrid, XAxis } from "recharts";
 import { toast } from "sonner";
@@ -10,6 +10,16 @@ import { toast } from "sonner";
 import { ChartRangePicker, useChartRange } from "@/components/chart-range";
 import { DataTable } from "@/components/data-table";
 import { LocationLabel } from "@/components/location";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { ChartContainer, ChartTooltip, ChartTooltipContent, type ChartConfig } from "@/components/ui/chart";
@@ -65,6 +75,23 @@ export default function NodesPage() {
     },
     onError: (error) => toast.error(error instanceof ApiError ? error.message : "Could not refresh metrics"),
   });
+  const [deleting, setDeleting] = useState<FleetNode | null>(null);
+  const remove = useMutation({
+    mutationFn: ({ node, force }: { node: FleetNode; force: boolean }) =>
+      api<{ status: "deleted" | "removing" }>(`/api/nodes/${node.id}${force ? "?force=1" : ""}`, { method: "DELETE" }),
+    onSuccess: (result, { node }) => {
+      setDeleting(null);
+      if (result.status === "removing") {
+        toast.success(`${node.name} is uninstalling its agent`);
+      } else {
+        toast.success(`${node.name} removed`);
+        setSelected((current) => (current?.id === node.id ? null : current));
+      }
+      void client.invalidateQueries({ queryKey: ["nodes"] });
+      void client.invalidateQueries({ queryKey: ["overview"] });
+    },
+    onError: (error) => toast.error(error instanceof ApiError ? error.message : "Could not delete node"),
+  });
   const refreshAll = useMutation({
     mutationFn: () => api<{ count: number }>("/api/nodes/refresh", { method: "POST" }),
     onSuccess: (result) => {
@@ -108,11 +135,14 @@ export default function NodesPage() {
         cell: ({ row }) => (
           <div className="flex items-center gap-2">
             <span
-              className={`size-2 shrink-0 rounded-full ${updateBusy(row.original) ? "bg-amber-400" : row.original.online ? "bg-emerald-500" : "bg-red-500"}`}
-              title={updateBusy(row.original) ? "Updating" : row.original.online ? "Online" : "Offline"}
+              className={`size-2 shrink-0 rounded-full ${row.original.removing ? "animate-pulse bg-muted-foreground" : updateBusy(row.original) ? "bg-amber-400" : row.original.online ? "bg-emerald-500" : "bg-red-500"}`}
+              title={row.original.removing ? "Uninstalling" : updateBusy(row.original) ? "Updating" : row.original.online ? "Online" : "Offline"}
             />
             <div className="min-w-0">
-              <div className="font-medium">{row.original.name}</div>
+              <div className="font-medium">
+                {row.original.name}
+                {row.original.removing ? <span className="ml-2 text-[11px] font-normal text-muted-foreground">uninstalling…</span> : null}
+              </div>
               <div className="text-xs text-muted-foreground">{row.original.hostname || row.original.os || "—"}</div>
               {row.original.ip ? <CopyIP ip={row.original.ip} /> : null}
             </div>
@@ -195,18 +225,32 @@ export default function NodesPage() {
               cell: ({ row }) => {
                 const measuring = Boolean(pending[row.original.id]);
                 return (
-                  <Button
-                    variant="ghost"
-                    size="icon-xs"
-                    title={measuring ? "Measuring speed" : "Refresh metrics"}
-                    disabled={measuring}
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      refreshOne.mutate(row.original);
-                    }}
-                  >
-                    <RefreshCwIcon className={measuring ? "animate-spin" : ""} />
-                  </Button>
+                  <div className="flex items-center justify-end gap-0.5">
+                    <Button
+                      variant="ghost"
+                      size="icon-xs"
+                      title={measuring ? "Measuring speed" : "Refresh metrics"}
+                      disabled={measuring || row.original.removing}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        refreshOne.mutate(row.original);
+                      }}
+                    >
+                      <RefreshCwIcon className={measuring ? "animate-spin" : ""} />
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="icon-xs"
+                      title="Delete node"
+                      className="text-muted-foreground hover:text-destructive"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        setDeleting(row.original);
+                      }}
+                    >
+                      <Trash2Icon />
+                    </Button>
+                  </div>
                 );
               },
             } satisfies ColumnDef<FleetNode>,
@@ -216,7 +260,7 @@ export default function NodesPage() {
     [admin, pending, refreshOne],
   );
 
-  const liveSelected = selected ? (nodes.data?.find((node) => node.id === selected.id) ?? selected) : null;
+  const liveSelected = selected ? (nodes.data ? (nodes.data.find((node) => node.id === selected.id) ?? null) : selected) : null;
 
   return (
     <div className="space-y-5">
@@ -241,11 +285,38 @@ export default function NodesPage() {
         refreshing={Boolean(liveSelected && pending[liveSelected.id])}
         onRefresh={() => liveSelected && refreshOne.mutate(liveSelected)}
         onClose={() => setSelected(null)}
+        onDelete={() => liveSelected && setDeleting(liveSelected)}
         onSaved={() => {
           client.invalidateQueries({ queryKey: ["nodes"] });
           client.invalidateQueries({ queryKey: ["groups"] });
         }}
       />
+      <AlertDialog open={Boolean(deleting)} onOpenChange={(open) => !open && setDeleting(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete {deleting?.name}?</AlertDialogTitle>
+            <AlertDialogDescription>
+              {deleting?.removing
+                ? "The agent was already told to uninstall. Remove the node now if it is not responding."
+                : deleting?.online
+                  ? "The agent stops, disables its systemd service, and removes its binary and config on its next heartbeat. The node then disappears from the fleet."
+                  : "This machine is offline, so it is removed right away. If it comes back it can no longer authenticate; uninstall the agent on the machine by hand."}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            {deleting?.online && !deleting.removing ? (
+              <AlertDialogAction variant="destructive" disabled={remove.isPending} onClick={() => deleting && remove.mutate({ node: deleting, force: false })}>
+                Uninstall and delete
+              </AlertDialogAction>
+            ) : (
+              <AlertDialogAction variant="destructive" disabled={remove.isPending} onClick={() => deleting && remove.mutate({ node: deleting, force: true })}>
+                Delete now
+              </AlertDialogAction>
+            )}
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }
@@ -257,6 +328,7 @@ function NodeSheet({
   refreshing,
   onRefresh,
   onClose,
+  onDelete,
   onSaved,
 }: {
   node: FleetNode | null;
@@ -265,6 +337,7 @@ function NodeSheet({
   refreshing: boolean;
   onRefresh: () => void;
   onClose: () => void;
+  onDelete: () => void;
   onSaved: () => void;
 }) {
   const range = useChartRange();
@@ -412,6 +485,20 @@ function NodeSheet({
                   </div>
                   <Button type="submit" disabled={save.isPending}>Save</Button>
                 </form>
+              ) : null}
+              {admin ? (
+                <div className="flex items-center justify-between gap-3 rounded-lg border border-destructive/30 px-3 py-2.5">
+                  <div className="text-xs">
+                    <div className="font-medium">{node.removing ? "Uninstalling agent…" : "Delete node"}</div>
+                    <div className="text-muted-foreground">
+                      {node.removing ? "Waiting for the next heartbeat." : "Online agents uninstall themselves."}
+                    </div>
+                  </div>
+                  <Button type="button" variant="destructive" size="sm" onClick={onDelete}>
+                    <Trash2Icon />
+                    Delete
+                  </Button>
+                </div>
               ) : null}
             </div>
           </>
