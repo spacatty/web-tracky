@@ -2,10 +2,12 @@
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { CopyIcon, GlobeIcon, LockIcon, PauseIcon, PencilIcon, PlayIcon, Trash2Icon } from "lucide-react";
+import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
 
+import { FolderBadge } from "@/components/folder-ui";
 import { DeleteMonitorDialog, copyShare, useMonitorActions } from "@/components/monitor-actions";
 import { MonitorDialog } from "@/components/monitor-form";
 import { MonitorPanel } from "@/components/monitor-panel";
@@ -13,6 +15,7 @@ import { StatusPill } from "@/components/status-pill";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { api, errorMessage } from "@/lib/api";
+import { useFolders } from "@/lib/folders";
 import { formatInterval } from "@/lib/format";
 import { successLabel } from "@/lib/success";
 import type { CheckRun, MonitorDetail, ResultEvent } from "@/lib/types";
@@ -23,6 +26,7 @@ export default function MonitorDetailPage() {
   const router = useRouter();
   const client = useQueryClient();
   const query = useQuery({ queryKey: ["monitor", id], queryFn: () => api<MonitorDetail>(`/api/monitors/${id}`) });
+  const folders = useFolders();
   const [run, setRun] = useState<CheckRun | null>(null);
   const [editing, setEditing] = useState(false);
   const [deleting, setDeleting] = useState(false);
@@ -68,12 +72,18 @@ export default function MonitorDetailPage() {
     );
   }
   const monitor = query.data;
+  const folder = monitor.folder_id ? folders.data?.find((item) => item.id === monitor.folder_id) : undefined;
   const shareHref = monitor.public_enabled && monitor.public_slug ? `${window.location.origin}/status/${monitor.public_slug}` : null;
 
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0">
+          {folder ? (
+            <Link href={`/monitors#group-${folder.id}`} className="mb-1 inline-flex transition-opacity hover:opacity-80">
+              <FolderBadge folder={folder} />
+            </Link>
+          ) : null}
           <div className="flex items-center gap-2">
             <h1 className="text-xl font-semibold tracking-tight">{monitor.name}</h1>
             {monitor.enabled ? <StatusPill status={monitor.last_status} /> : <StatusPill status="unknown" label="paused" />}

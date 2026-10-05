@@ -44,10 +44,10 @@ export default function GroupsPage() {
     <div className="space-y-5">
       <div className="flex items-end justify-between gap-3">
         <div>
-          <p className="font-mono text-[11px] tracking-[0.16em] text-muted-foreground uppercase">Pools</p>
-          <h1 className="mt-1 text-2xl font-semibold tracking-tight">Groups</h1>
+          <p className="font-mono text-[11px] tracking-[0.16em] text-muted-foreground uppercase">Fleet</p>
+          <h1 className="mt-1 text-2xl font-semibold tracking-tight">Pools</h1>
         </div>
-        {admin ? <Button onClick={() => setOpen(true)}>New group</Button> : null}
+        {admin ? <Button onClick={() => setOpen(true)}>New pool</Button> : null}
       </div>
       <DataTable columns={columns} data={groups.data ?? []} searchPlaceholder="Search groups" onRowClick={(group) => setSelected(group.id)} empty="No groups yet." />
       <CreateGroup open={open} onOpenChange={setOpen} onCreated={() => client.invalidateQueries({ queryKey: ["groups"] })} />
@@ -75,7 +75,7 @@ function CreateGroup({ open, onOpenChange, onCreated }: { open: boolean; onOpenC
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-md">
         <DialogHeader>
-          <DialogTitle>New group</DialogTitle>
+          <DialogTitle>New pool</DialogTitle>
         </DialogHeader>
         <form
           className="space-y-3"

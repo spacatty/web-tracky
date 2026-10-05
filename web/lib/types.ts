@@ -121,12 +121,67 @@ export type Monitor = {
   template_id: string | null;
   template_name: string;
   groups: GroupRef[];
+  folder_id: string | null;
+  owner_id?: string;
   last_status: string;
   last_checked_at: string | null;
   uptime_24h: number | null;
   owner_email?: string;
   created_at: string;
 };
+
+export type FolderColor = "slate" | "red" | "orange" | "amber" | "lime" | "emerald" | "teal" | "sky" | "blue" | "indigo" | "violet" | "pink";
+
+export type FolderIcon = "folder" | "globe" | "server" | "database" | "cart" | "shield" | "zap" | "cloud" | "code" | "briefcase" | "heart" | "star";
+
+export type MonitorFolder = {
+  id: string;
+  owner_id: string;
+  owner_email: string;
+  name: string;
+  description: string;
+  color: FolderColor;
+  icon: FolderIcon;
+  position: number;
+  public_enabled: boolean;
+  public_slug: string | null;
+  public_protected: boolean;
+  monitor_count: number;
+  created_at: string;
+};
+
+export type PublicGroupBucket = {
+  t: string;
+  ok_ratio: number;
+  avg_ms: number | null;
+};
+
+export type PublicGroupMonitor = {
+  id: string;
+  name: string;
+  target_url: string;
+  enabled: boolean;
+  last_status: string;
+  last_checked_at: string | null;
+  uptime: number | null;
+  avg_ms: number | null;
+  public_slug: string | null;
+  buckets: PublicGroupBucket[];
+};
+
+export type PublicGroup = {
+  name: string;
+  description: string;
+  color: FolderColor;
+  icon: FolderIcon;
+  from: string;
+  to: string;
+  bin_sec: number;
+  uptime: number | null;
+  monitors: PublicGroupMonitor[];
+};
+
+export type BulkAction = "pause" | "resume" | "check" | "move" | "delete";
 
 export type CheckResult = {
   id: string;

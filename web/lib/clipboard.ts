@@ -12,3 +12,7 @@ export async function copyText(text: string, label = "Copied") {
 export function shareURL(slug: string) {
   return `${window.location.origin}/status/${slug}`;
 }
+
+export function groupShareURL(slug: string) {
+  return `${window.location.origin}/status/group/${slug}`;
+}

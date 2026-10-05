@@ -150,8 +150,18 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("POST /api/spot-checks", s.requireUser(s.createSpotCheck))
 	mux.HandleFunc("GET /api/spot-checks/{id}", s.requireUser(s.getSpotCheck))
 
+	mux.HandleFunc("GET /api/monitor-folders", s.requireUser(s.listFolders))
+	mux.HandleFunc("POST /api/monitor-folders", s.requireUser(s.createFolder))
+	mux.HandleFunc("POST /api/monitor-folders/reorder", s.requireUser(s.reorderFolders))
+	mux.HandleFunc("GET /api/monitor-folders/{id}", s.requireUser(s.getFolder))
+	mux.HandleFunc("PATCH /api/monitor-folders/{id}", s.requireUser(s.patchFolder))
+	mux.HandleFunc("DELETE /api/monitor-folders/{id}", s.requireUser(s.deleteFolder))
+	mux.HandleFunc("GET /api/public/group-status/{slug}", s.publicGroupStatus)
+	mux.HandleFunc("POST /api/public/group-status/{slug}/unlock", s.unlockGroupStatus)
+
 	mux.HandleFunc("GET /api/monitors", s.requireUser(s.listMonitors))
 	mux.HandleFunc("POST /api/monitors/import", s.requireUser(s.importMonitors))
+	mux.HandleFunc("POST /api/monitors/bulk", s.requireUser(s.bulkMonitors))
 	mux.HandleFunc("POST /api/monitors", s.requireUser(s.createMonitor))
 	mux.HandleFunc("GET /api/monitors/{id}/series", s.requireUser(s.monitorSeries))
 	mux.HandleFunc("GET /api/monitors/{id}", s.requireUser(s.getMonitor))

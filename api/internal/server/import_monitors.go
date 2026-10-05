@@ -18,12 +18,18 @@ func (s *Server) importMonitors(w http.ResponseWriter, r *http.Request) {
 		MaxNodes     int      `json:"max_nodes"`
 		GroupIDs     []string `json:"group_ids"`
 		TemplateID   string   `json:"template_id"`
+		FolderID     string   `json:"folder_id"`
 	}
 	if err := decodeJSON(r, &body); err != nil {
 		writeErr(w, http.StatusBadRequest, "invalid json")
 		return
 	}
 	items, err := parseLinkList(body.Text, maxImportLinks)
+	if err != nil {
+		writeAPIError(w, err)
+		return
+	}
+	folderID, err := s.resolveFolder(r.Context(), u.ID, body.FolderID)
 	if err != nil {
 		writeAPIError(w, err)
 		return
@@ -82,10 +88,10 @@ func (s *Server) importMonitors(w http.ResponseWriter, r *http.Request) {
 	for _, item := range prepared {
 		var id string
 		err = tx.QueryRow(r.Context(), `
-			INSERT INTO monitors (owner_id, name, target_url, interval_sec, enabled, country_codes, max_nodes, success_rules, next_run_at, template_id)
-			VALUES ($1::uuid, $2, $3, $4, $5, $6, $7, $8::jsonb, now(), $9::uuid)
+			INSERT INTO monitors (owner_id, name, target_url, interval_sec, enabled, country_codes, max_nodes, success_rules, next_run_at, template_id, folder_id)
+			VALUES ($1::uuid, $2, $3, $4, $5, $6, $7, $8::jsonb, now(), $9::uuid, $10::uuid)
 			RETURNING id::text`,
-			u.ID, item.name, item.target, interval, enabled, item.countries, maxNodes, string(rulesJSON), templateArg).Scan(&id)
+			u.ID, item.name, item.target, interval, enabled, item.countries, maxNodes, string(rulesJSON), templateArg, folderID).Scan(&id)
 		if err != nil {
 			writeAPIError(w, err)
 			return

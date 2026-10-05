@@ -1,10 +1,11 @@
 "use client";
 
-import { useMutation, useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { CopyIcon, LockIcon } from "lucide-react";
 import { useState } from "react";
 import { toast } from "sonner";
 
+import { FolderSelect } from "@/components/folder-ui";
 import { GroupChecks } from "@/components/group-checks";
 import { PresetSelect, useStatusTemplates } from "@/components/preset-select";
 import { SuccessRulesField } from "@/components/success-rules";
@@ -19,7 +20,7 @@ import { api, errorMessage } from "@/lib/api";
 import { copyText, shareURL } from "@/lib/clipboard";
 import { formatInterval, intervalStops } from "@/lib/format";
 import { blankRule, compileRules, toDraft, type DraftRule } from "@/lib/success";
-import type { Monitor, PublicConfig, SuccessRule } from "@/lib/types";
+import type { Me, Monitor, PublicConfig, SuccessRule } from "@/lib/types";
 
 type PasswordMode = "keep" | "set" | "clear";
 
@@ -27,24 +28,47 @@ export function MonitorDialog({
   open,
   onOpenChange,
   monitor,
+  defaultFolderId,
   onSaved,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   monitor?: Monitor | null;
+  defaultFolderId?: string;
   onSaved: (monitor: Monitor) => void;
 }) {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-h-[calc(100vh-2rem)] overflow-y-auto sm:max-w-xl">
-        {open ? <MonitorForm key={monitor?.id ?? "new"} monitor={monitor ?? null} onSaved={onSaved} onClose={() => onOpenChange(false)} /> : null}
+        {open ? (
+          <MonitorForm
+            key={monitor?.id ?? `new-${defaultFolderId ?? ""}`}
+            monitor={monitor ?? null}
+            defaultFolderId={defaultFolderId}
+            onSaved={onSaved}
+            onClose={() => onOpenChange(false)}
+          />
+        ) : null}
       </DialogContent>
     </Dialog>
   );
 }
 
-function MonitorForm({ monitor, onSaved, onClose }: { monitor: Monitor | null; onSaved: (monitor: Monitor) => void; onClose: () => void }) {
+function MonitorForm({
+  monitor,
+  defaultFolderId,
+  onSaved,
+  onClose,
+}: {
+  monitor: Monitor | null;
+  defaultFolderId?: string;
+  onSaved: (monitor: Monitor) => void;
+  onClose: () => void;
+}) {
   const editing = Boolean(monitor);
+  const client = useQueryClient();
+  const me = useQuery({ queryKey: ["me"], queryFn: () => api<Me>("/api/auth/me") });
+  const [folderID, setFolderID] = useState(monitor ? (monitor.folder_id ?? "") : (defaultFolderId ?? ""));
   const config = useQuery({ queryKey: ["config"], queryFn: () => api<PublicConfig>("/api/config") });
   const templates = useStatusTemplates();
   const base = intervalStops(config.data?.min_interval_sec ?? 30);
@@ -89,6 +113,7 @@ function MonitorForm({ monitor, onSaved, onClose }: { monitor: Monitor | null; o
         group_ids: groupIDs,
         success_rules: rulesPayload,
         template_id: templateID,
+        folder_id: folderID,
       };
       if (passwordMode === "clear") payload.public_password = "";
       if (passwordMode === "set" && password) payload.public_password = password;
@@ -98,6 +123,7 @@ function MonitorForm({ monitor, onSaved, onClose }: { monitor: Monitor | null; o
         : api<Monitor>("/api/monitors", { method: "POST", body: JSON.stringify(payload) });
     },
     onSuccess: (saved) => {
+      void client.invalidateQueries({ queryKey: ["monitor-folders"] });
       toast.success(editing ? "Monitor updated" : "Monitor created");
       onClose();
       onSaved(saved);
@@ -128,6 +154,10 @@ function MonitorForm({ monitor, onSaved, onClose }: { monitor: Monitor | null; o
           <Label>URL</Label>
           <Input value={url} onChange={(event) => setUrl(event.target.value)} required />
         </div>
+        <div className="space-y-1.5">
+          <Label>Group</Label>
+          <FolderSelect value={folderID} ownerId={monitor?.owner_id ?? me.data?.id} onChange={(id) => setFolderID(id)} />
+        </div>
         <div className="space-y-2">
           <div className="flex items-center justify-between text-sm">
             <Label>Interval</Label>
@@ -154,7 +184,7 @@ function MonitorForm({ monitor, onSaved, onClose }: { monitor: Monitor | null; o
             <Input value={countries} onChange={(event) => setCountries(event.target.value)} placeholder="DE, US" />
           </div>
         </div>
-        <GroupChecks ids={groupIDs} onChange={setGroupIDs} />
+        <GroupChecks ids={groupIDs} onChange={setGroupIDs} defaultPrivate={!monitor} />
         <PresetSelect
           value={preset}
           fallbackName={monitor?.template_name}

@@ -79,7 +79,7 @@ export default function PresetsPage() {
           <p className="font-mono text-[11px] tracking-[0.16em] text-muted-foreground uppercase">Checks</p>
           <h1 className="mt-1 text-2xl font-semibold tracking-tight">Status presets</h1>
           <p className="mt-1 max-w-xl text-sm text-muted-foreground">
-            Named success rules you can apply to a monitor, an import, or a one-off check. A preset such as Some Service can pass only on HTTP 404 when the body contains a fixed phrase.
+            Named success rules you can apply to a monitor, an import, or a probe. A preset such as Some Service can pass only on HTTP 404 when the body contains a fixed phrase.
           </p>
         </div>
         <Button onClick={() => setCreating(true)}>New preset</Button>

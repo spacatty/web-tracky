@@ -50,14 +50,14 @@ type NavItem = { href: string; label: string; icon: LucideIcon };
 
 const watch: NavItem[] = [
   { href: "/monitors", label: "Monitors", icon: ActivityIcon },
-  { href: "/check", label: "One-off check", icon: ListChecksIcon },
+  { href: "/check", label: "Probe", icon: ListChecksIcon },
   { href: "/presets", label: "Presets", icon: BookmarkIcon },
 ];
 
 const fleet: NavItem[] = [
   { href: "/", label: "Overview", icon: LayoutDashboardIcon },
   { href: "/nodes", label: "Nodes", icon: RadarIcon },
-  { href: "/groups", label: "Groups", icon: LayersIcon },
+  { href: "/groups", label: "Pools", icon: LayersIcon },
 ];
 
 const admin: NavItem[] = [

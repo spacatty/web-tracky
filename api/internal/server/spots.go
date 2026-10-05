@@ -11,8 +11,6 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-const maxSpotLinks = 50
-
 type spotTarget struct {
 	URL    string   `json:"url"`
 	Name   string   `json:"name"`
@@ -111,7 +109,7 @@ func (s *Server) createSpotCheck(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "invalid json")
 		return
 	}
-	items, err := parseLinkList(body.Text, maxSpotLinks)
+	items, err := parseLinkList(body.Text, 0)
 	if err != nil {
 		writeAPIError(w, err)
 		return

@@ -331,10 +331,8 @@ type linkItem struct {
 // parseLinkList reads a pasted list or text file. Blank lines and # comments are
 // skipped. A line may be a bare host, one or more http(s) links, or a name
 // followed by a single link.
+// parseLinkList treats a limit of 0 or less as unlimited.
 func parseLinkList(text string, limit int) ([]linkItem, error) {
-	if limit < 1 {
-		limit = 1
-	}
 	text = strings.TrimPrefix(text, "\uFEFF")
 	text = strings.ReplaceAll(text, "\r\n", "\n")
 	text = strings.ReplaceAll(text, "\r", "\n")
@@ -360,7 +358,7 @@ func parseLinkList(text string, limit int) ([]linkItem, error) {
 			}
 			seen[normalized] = struct{}{}
 			items = append(items, linkItem{Name: strings.TrimSpace(raw.name), URL: normalized, Line: i + 1})
-			if len(items) > limit {
+			if limit > 0 && len(items) > limit {
 				return nil, badRequest(fmt.Sprintf("at most %d links", limit))
 			}
 		}

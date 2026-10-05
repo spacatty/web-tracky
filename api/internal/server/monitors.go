@@ -33,6 +33,8 @@ type monitorRow struct {
 	TemplateID    *string            `json:"template_id"`
 	TemplateName  string             `json:"template_name"`
 	Groups        []groupRef         `json:"groups"`
+	FolderID      *string            `json:"folder_id"`
+	OwnerID       string             `json:"owner_id,omitempty"`
 	LastStatus    string             `json:"last_status"`
 	LastCheckedAt *time.Time         `json:"last_checked_at"`
 	Uptime24h     *float64           `json:"uptime_24h"`
@@ -126,12 +128,18 @@ func (s *Server) createMonitor(w http.ResponseWriter, r *http.Request) {
 		GroupIDs       []string           `json:"group_ids"`
 		SuccessRules   []pack.SuccessRule `json:"success_rules"`
 		TemplateID     *string            `json:"template_id"`
+		FolderID       string             `json:"folder_id"`
 	}
 	if err := decodeJSON(r, &body); err != nil {
 		writeErr(w, http.StatusBadRequest, "invalid json")
 		return
 	}
 	name, target, countries, groups, err := s.normalizeMonitor(r.Context(), u, body.Name, body.TargetURL, body.IntervalSec, body.MaxNodes, body.CountryCodes, body.GroupIDs)
+	if err != nil {
+		writeAPIError(w, err)
+		return
+	}
+	folderID, err := s.resolveFolder(r.Context(), u.ID, body.FolderID)
 	if err != nil {
 		writeAPIError(w, err)
 		return
@@ -179,10 +187,10 @@ func (s *Server) createMonitor(w http.ResponseWriter, r *http.Request) {
 	}
 	var id string
 	err = tx.QueryRow(r.Context(), `
-		INSERT INTO monitors (owner_id, name, target_url, interval_sec, enabled, public_enabled, public_slug, public_password_hash, country_codes, max_nodes, success_rules, next_run_at, template_id)
-		VALUES ($1::uuid, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::jsonb, now(), $12::uuid)
+		INSERT INTO monitors (owner_id, name, target_url, interval_sec, enabled, public_enabled, public_slug, public_password_hash, country_codes, max_nodes, success_rules, next_run_at, template_id, folder_id)
+		VALUES ($1::uuid, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::jsonb, now(), $12::uuid, $13::uuid)
 		RETURNING id::text`,
-		u.ID, name, target, body.IntervalSec, enabled, body.PublicEnabled, slug, passwordHash, countries, body.MaxNodes, string(rulesJSON), templateArg).Scan(&id)
+		u.ID, name, target, body.IntervalSec, enabled, body.PublicEnabled, slug, passwordHash, countries, body.MaxNodes, string(rulesJSON), templateArg, folderID).Scan(&id)
 	if err != nil {
 		writeAPIError(w, err)
 		return
@@ -227,6 +235,7 @@ func (s *Server) patchMonitor(w http.ResponseWriter, r *http.Request) {
 		GroupIDs       *[]string           `json:"group_ids"`
 		SuccessRules   *[]pack.SuccessRule `json:"success_rules"`
 		TemplateID     *string             `json:"template_id"`
+		FolderID       *string             `json:"folder_id"`
 	}
 	if err := decodeJSON(r, &body); err != nil {
 		writeErr(w, http.StatusBadRequest, "invalid json")
@@ -239,6 +248,14 @@ func (s *Server) patchMonitor(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	current = row
+	var folderID *string
+	if body.FolderID != nil {
+		folderID, err = s.resolveFolder(r.Context(), current.OwnerID, *body.FolderID)
+		if err != nil {
+			writeAPIError(w, err)
+			return
+		}
+	}
 	name, target := current.Name, current.TargetURL
 	interval, maxNodes := current.IntervalSec, current.MaxNodes
 	countries := current.CountryCodes
@@ -354,6 +371,10 @@ func (s *Server) patchMonitor(w http.ResponseWriter, r *http.Request) {
 		}
 		args = append(args, arg)
 		q += fmt.Sprintf(`, template_id = $%d::uuid`, len(args))
+	}
+	if body.FolderID != nil {
+		args = append(args, folderID)
+		q += fmt.Sprintf(`, folder_id = $%d::uuid`, len(args))
 	}
 	q += ` WHERE id = $1::uuid`
 	if _, err := tx.Exec(r.Context(), q, args...); err != nil {
@@ -500,6 +521,8 @@ func (s *Server) publicStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	detail.OwnerEmail = ""
+	detail.OwnerID = ""
+	detail.FolderID = nil
 	writeJSON(w, http.StatusOK, detail)
 }
 
@@ -766,7 +789,9 @@ SELECT
 	), '[]'::json),
 	COALESCE(last.last_status, 'unknown'),
 	last.last_checked_at,
-	up.uptime
+	up.uptime,
+	m.folder_id::text,
+	m.owner_id::text
 FROM monitors m
 JOIN users u ON u.id = m.owner_id
 LEFT JOIN status_templates st ON st.id = m.template_id
@@ -799,6 +824,7 @@ func scanMonitor(row interface{ Scan(...any) error }) (monitorRow, error) {
 	err := row.Scan(
 		&m.ID, &m.Name, &m.TargetURL, &m.IntervalSec, &m.Enabled, &m.PublicEnabled, &m.PublicSlug, &m.Protected,
 		&m.CountryCodes, &m.MaxNodes, &rawRules, &m.TemplateID, &m.TemplateName, &m.CreatedAt, &m.OwnerEmail, &rawGroups, &m.LastStatus, &m.LastCheckedAt, &m.Uptime24h,
+		&m.FolderID, &m.OwnerID,
 	)
 	if err != nil {
 		return m, err

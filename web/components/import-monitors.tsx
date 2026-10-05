@@ -4,6 +4,7 @@ import { useMutation, useQuery } from "@tanstack/react-query";
 import { useState } from "react";
 import { toast } from "sonner";
 
+import { FolderSelect } from "@/components/folder-ui";
 import { GroupChecks } from "@/components/group-checks";
 import { LinkListField } from "@/components/link-list-field";
 import { PresetSelect } from "@/components/preset-select";
@@ -14,20 +15,29 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Switch } from "@/components/ui/switch";
 import { api, errorMessage } from "@/lib/api";
 import { formatInterval, intervalStops } from "@/lib/format";
-import type { PublicConfig } from "@/lib/types";
+import type { Me, PublicConfig } from "@/lib/types";
 
 export function ImportMonitorsDialog({
   open,
   onOpenChange,
+  defaultFolderId,
   onImported,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  defaultFolderId?: string;
   onImported: () => void;
 }) {
   const config = useQuery({ queryKey: ["config"], queryFn: () => api<PublicConfig>("/api/config") });
+  const me = useQuery({ queryKey: ["me"], queryFn: () => api<Me>("/api/auth/me") });
   const stops = intervalStops(config.data?.min_interval_sec ?? 30);
   const [text, setText] = useState("");
+  const [folderID, setFolderID] = useState(defaultFolderId ?? "");
+  const [seenDefault, setSeenDefault] = useState(defaultFolderId);
+  if (seenDefault !== defaultFolderId) {
+    setSeenDefault(defaultFolderId);
+    setFolderID(defaultFolderId ?? "");
+  }
   const [groupIDs, setGroupIDs] = useState<string[]>([]);
   const [preset, setPreset] = useState("default");
   const [interval, setIntervalSec] = useState(60);
@@ -45,6 +55,7 @@ export function ImportMonitorsDialog({
           enabled,
           template_id: preset === "default" ? "" : preset,
           max_nodes: 20,
+          folder_id: folderID,
         }),
       }),
     onSuccess: (result) => {
@@ -78,6 +89,11 @@ export function ImportMonitorsDialog({
               placeholder={"https://example.com\nBilling https://billing.example.com/health\n# comments are ignored"}
             />
             <p className="text-xs text-muted-foreground">One link per line, or upload a .txt file. Put a name before a link to name that monitor.</p>
+          </div>
+          <div className="space-y-1.5">
+            <Label>Group</Label>
+            <FolderSelect value={folderID} ownerId={me.data?.id} onChange={(id) => setFolderID(id)} />
+            <p className="text-xs text-muted-foreground">Every imported monitor lands in this group. Type a new name to create one.</p>
           </div>
           <div className="space-y-1.5">
             <Label>Interval</Label>
