@@ -273,13 +273,13 @@ func (s *Server) expireOnce() {
 	if len(resultIDs) == 0 {
 		return
 	}
-	if _, err := s.pool.Exec(ctx, `UPDATE jobs SET status = 'expired' WHERE result_id::text = ANY($1::text[]) AND status IN ('queued', 'leased')`, resultIDs); err != nil {
+	if _, err := s.pool.Exec(ctx, `UPDATE jobs SET status = 'expired' WHERE result_id = ANY($1::text[]::uuid[]) AND status IN ('queued', 'leased')`, resultIDs); err != nil {
 		log.Printf("expire jobs: %v", err)
 	}
 	if _, err := s.pool.Exec(ctx, `
 		UPDATE check_runs r SET finished_at = now()
 		WHERE r.finished_at IS NULL
-		  AND r.id::text = ANY($1::text[])
+		  AND r.id = ANY($1::text[]::uuid[])
 		  AND NOT EXISTS (
 			SELECT 1 FROM check_results cr WHERE cr.run_id = r.id AND cr.status = 'pending'
 		  )`, runIDs); err != nil {

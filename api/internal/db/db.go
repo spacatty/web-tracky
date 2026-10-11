@@ -32,6 +32,9 @@ var migrate7SQL string
 //go:embed migrate8.sql
 var migrate8SQL string
 
+//go:embed migrate9.sql
+var migrate9SQL string
+
 func Connect(ctx context.Context, url string) (*pgxpool.Pool, error) {
 	pool, err := pgxpool.New(ctx, url)
 	if err != nil {
@@ -129,6 +132,15 @@ func Migrate(ctx context.Context, pool *pgxpool.Pool) error {
 	if v8 == 0 {
 		if _, err := tx.Exec(ctx, migrate8SQL); err != nil {
 			return fmt.Errorf("migrate v8: %w", err)
+		}
+	}
+	var v9 int
+	if err := tx.QueryRow(ctx, `SELECT count(*) FROM schema_migrations WHERE version = 9`).Scan(&v9); err != nil {
+		return err
+	}
+	if v9 == 0 {
+		if _, err := tx.Exec(ctx, migrate9SQL); err != nil {
+			return fmt.Errorf("migrate v9: %w", err)
 		}
 	}
 	return tx.Commit(ctx)

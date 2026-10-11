@@ -299,6 +299,12 @@ func (s *Server) postResult(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusConflict, "job expired")
 		return
 	}
+	// Serialize results of the same run: otherwise two concurrent posts each see the
+	// other's result as still pending and neither marks the run finished.
+	if _, err := tx.Exec(r.Context(), `SELECT 1 FROM check_runs WHERE id = $1::uuid FOR NO KEY UPDATE`, runID); err != nil {
+		writeAPIError(w, err)
+		return
+	}
 	httpSave := asMap(body.Saves["http"])
 	pingSave := asMap(body.Saves["ping"])
 	resultStatus := "fail"
