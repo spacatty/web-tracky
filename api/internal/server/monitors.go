@@ -764,6 +764,19 @@ func (s *Server) normalizeMonitor(ctx context.Context, u User, name, target stri
 	return name, target, countries, groups, nil
 }
 
+// lastRunFromSQL picks a monitor's newest run before joining its results, so the
+// aggregate reads one run instead of the monitor's whole history. It expects
+// monitors aliased as m and exposes the run as r and its results as cr.
+const lastRunFromSQL = `
+	FROM (
+		SELECT id, started_at FROM check_runs
+		WHERE monitor_id = m.id
+		ORDER BY started_at DESC
+		LIMIT 1
+	) r
+	LEFT JOIN check_results cr ON cr.run_id = r.id
+	GROUP BY r.id, r.started_at`
+
 const monitorSelectSQL = `
 SELECT
 	m.id::text,
@@ -803,13 +816,7 @@ LEFT JOIN LATERAL (
 			WHEN count(*) FILTER (WHERE cr.status = 'ok') > 0 THEN 'ok'
 			ELSE 'unknown'
 		END AS last_status,
-		r.started_at AS last_checked_at
-	FROM check_runs r
-	LEFT JOIN check_results cr ON cr.run_id = r.id
-	WHERE r.monitor_id = m.id
-	GROUP BY r.id, r.started_at
-	ORDER BY r.started_at DESC
-	LIMIT 1
+		r.started_at AS last_checked_at` + lastRunFromSQL + `
 ) last ON true
 LEFT JOIN LATERAL (
 	SELECT avg(CASE WHEN cr.status = 'ok' THEN 1.0 ELSE 0 END) AS uptime

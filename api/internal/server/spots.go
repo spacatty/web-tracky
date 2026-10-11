@@ -55,13 +55,7 @@ func (s *Server) listSpotChecks(w http.ResponseWriter, r *http.Request) {
 				WHEN count(*) FILTER (WHERE cr.status = 'fail') > 0 THEN 'fail'
 				WHEN count(*) FILTER (WHERE cr.status = 'ok') > 0 THEN 'ok'
 				ELSE 'unknown'
-			END AS status
-			FROM check_runs r
-			LEFT JOIN check_results cr ON cr.run_id = r.id
-			WHERE r.monitor_id = m.id
-			GROUP BY r.id, r.started_at
-			ORDER BY r.started_at DESC
-			LIMIT 1
+			END AS status`+lastRunFromSQL+`
 		) st ON true
 		WHERE $2::bool OR s.owner_id = $1::uuid
 		GROUP BY s.id

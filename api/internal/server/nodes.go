@@ -499,13 +499,7 @@ func (s *Server) overview(w http.ResponseWriter, r *http.Request) {
 						WHEN count(*) FILTER (WHERE cr.status = 'fail') > 0 THEN 'fail'
 						WHEN count(*) FILTER (WHERE cr.status = 'ok') > 0 THEN 'ok'
 						ELSE 'unknown'
-					END
-					FROM check_runs r
-					LEFT JOIN check_results cr ON cr.run_id = r.id
-					WHERE r.monitor_id = m.id
-					GROUP BY r.id, r.started_at
-					ORDER BY r.started_at DESC
-					LIMIT 1
+					END`+lastRunFromSQL+`
 				) AS last_status
 			FROM monitors m
 			WHERE m.kind = 'monitor' AND ($2::bool OR m.owner_id = $1::uuid)
@@ -803,13 +797,7 @@ func (s *Server) overviewMonitors(ctx context.Context, u User) ([]overviewMonito
 					WHEN count(*) FILTER (WHERE cr.status = 'ok') > 0 THEN 'ok'
 					ELSE 'unknown'
 				END AS last_status,
-				r.started_at AS last_checked_at
-			FROM check_runs r
-			LEFT JOIN check_results cr ON cr.run_id = r.id
-			WHERE r.monitor_id = m.id
-			GROUP BY r.id, r.started_at
-			ORDER BY r.started_at DESC
-			LIMIT 1
+				r.started_at AS last_checked_at`+lastRunFromSQL+`
 		) last ON true
 		LEFT JOIN LATERAL (
 			SELECT avg(CASE WHEN cr.status = 'ok' THEN 1.0 ELSE 0 END) AS uptime,

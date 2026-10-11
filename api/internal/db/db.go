@@ -35,8 +35,17 @@ var migrate8SQL string
 //go:embed migrate9.sql
 var migrate9SQL string
 
+//go:embed migrate10.sql
+var migrate10SQL string
+
 func Connect(ctx context.Context, url string) (*pgxpool.Pool, error) {
-	pool, err := pgxpool.New(ctx, url)
+	cfg, err := pgxpool.ParseConfig(url)
+	if err != nil {
+		return nil, err
+	}
+	// The panel's queries are short; JIT compilation costs more than it saves on them.
+	cfg.ConnConfig.RuntimeParams["jit"] = "off"
+	pool, err := pgxpool.NewWithConfig(ctx, cfg)
 	if err != nil {
 		return nil, err
 	}
@@ -141,6 +150,15 @@ func Migrate(ctx context.Context, pool *pgxpool.Pool) error {
 	if v9 == 0 {
 		if _, err := tx.Exec(ctx, migrate9SQL); err != nil {
 			return fmt.Errorf("migrate v9: %w", err)
+		}
+	}
+	var v10 int
+	if err := tx.QueryRow(ctx, `SELECT count(*) FROM schema_migrations WHERE version = 10`).Scan(&v10); err != nil {
+		return err
+	}
+	if v10 == 0 {
+		if _, err := tx.Exec(ctx, migrate10SQL); err != nil {
+			return fmt.Errorf("migrate v10: %w", err)
 		}
 	}
 	return tx.Commit(ctx)
